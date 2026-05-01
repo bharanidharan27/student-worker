@@ -170,13 +170,20 @@ def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:
     assert _resume_already_uploaded(FakePage(), resume_path) is True
 
 
-def test_my_experience_is_a_manual_advance_section() -> None:
-    assert "my experience" in MANUAL_ADVANCE_SECTIONS
+def test_my_experience_is_not_a_manual_advance_section() -> None:
+    """My Experience is auto-advanced — the tool clicks Next, nothing else."""
+    assert "my experience" not in MANUAL_ADVANCE_SECTIONS
 
 
 def test_current_section_label_recognises_workday_steps() -> None:
     assert _current_section_label("Quick Apply please upload") == "quick apply"
-    assert _current_section_label("My Experience Work Experience") == "my experience"
+    # Sidebar carries every prior label — the *latest* match is the real page.
+    assert (
+        _current_section_label(
+            "Quick Apply My Experience Work Experience"
+        )
+        == "my experience"
+    )
     assert (
         _current_section_label("Application Questions Are you eligible")
         == "application questions"
@@ -339,6 +346,11 @@ class _ResumeUploadFakePage:
     def wait_for_timeout(self, ms: int) -> None:
         return None
 
+    def evaluate(self, _script: str):
+        # Tests don't run real JS; report 'no files attached' so production
+        # selector fallbacks remain the only path that returns True.
+        return False
+
     def get_by_role(self, role, name=None):
         # Return an object that simulates a Remove button being click-able.
         # We never want this called from My Experience because that's the bug.
@@ -429,6 +441,54 @@ def test_upload_resume_skips_when_attachment_indicator_present(
     assert _upload_resume(page, resume_path, timeout_ms=1_000) is True
     assert page.set_input_files_calls == []
     assert page.remove_button_clicks == 0
+
+
+def test_quick_apply_section_fails_loud_when_attachment_chip_never_appears(
+    tmp_path: Path,
+) -> None:
+    """Quick Apply must NOT advance unless the attachment chip appears.
+
+    Regression for the bug where the tool clicked Next on Quick Apply
+    even though the resume never actually attached, leaving the
+    application empty.
+    """
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    page = _ResumeUploadFakePage(
+        body_text="Quick Apply Drop file here Select files",
+        # No attached_selector -> the verification poll will never see a chip.
+    )
+    job = _job_with_resume(resume_path)
+    profile = ApplicationProfile()
+
+    result = _fill_known_section(page, job, profile, timeout_ms=200)
+
+    assert result.ok is False
+    assert "attachment indicator" in (result.message or "")
+    # File input was set, but flow halts before any Next click.
+    assert page.set_input_files_calls == [str(resume_path)]
+
+
+def test_quick_apply_section_passes_when_attachment_chip_appears(
+    tmp_path: Path,
+) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    page = _ResumeUploadFakePage(
+        body_text="Quick Apply Drop file here Bharanidharan_Resume.pdf",
+        attached_selector="[data-automation-id='file-uploaded']",
+    )
+    job = _job_with_resume(resume_path)
+    profile = ApplicationProfile()
+
+    result = _fill_known_section(page, job, profile, timeout_ms=200)
+
+    assert result.ok is True
+    # _resume_already_attached returned True up-front, so no upload was
+    # needed; verification still passes.
+    assert page.set_input_files_calls == []
 
 
 def test_count_uploaded_resume_mentions_detects_duplicates(tmp_path: Path) -> None:

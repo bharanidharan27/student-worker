@@ -265,7 +265,11 @@ class SectionResult:
 # Sections where the user must manually verify or complete fields before the
 # automation advances. The tool fills what it can, then waits for the user to
 # click Save and Continue / Next themselves.
-MANUAL_ADVANCE_SECTIONS = ("my experience",)
+#
+# My Experience is intentionally NOT in this list. Workday's resume parser
+# pre-fills the section from the Quick Apply upload, and per the user's
+# instruction the tool must do nothing on this page except click Next.
+MANUAL_ADVANCE_SECTIONS: tuple[str, ...] = ()
 
 # How long to wait for the user to manually advance past a manual section before
 # giving up (in milliseconds). Default: 15 minutes.
@@ -274,16 +278,22 @@ MANUAL_ADVANCE_POLL_MS = 1_000
 
 
 def _current_section_label(body_text: str) -> str | None:
+    """Return the *current* Workday section, not the first sidebar match.
+
+    The left sidebar repeats every section label on every page, so we
+    check from the latest section backward and return the first one
+    found. That gives us the page the user is actually on.
+    """
     lowered = body_text.lower()
     for label in (
-        "quick apply",
-        "my experience",
-        "application questions",
-        "voluntary disclosures",
-        "voluntary personal information",
-        "self identify",
-        "self-identification of disability",
         "review",
+        "self-identification of disability",
+        "self identify",
+        "voluntary personal information",
+        "voluntary disclosures",
+        "application questions",
+        "my experience",
+        "quick apply",
     ):
         if label in lowered:
             return label
@@ -326,8 +336,13 @@ def _complete_application_flow(
     debug_dump_dir: Path | None,
     max_steps: int = 12,
 ) -> AutoApplyResult:
-    for _ in range(max_steps):
+    for step_index in range(max_steps):
         body_text = _safe_body_text(page)
+        section_label = _current_section_label(body_text)
+        print(
+            f"[auto-apply] Step {step_index + 1}: section = {section_label!r}.",
+            flush=True,
+        )
         section_result = _fill_known_section(page, job, profile, timeout_ms)
         if not section_result.ok:
             return AutoApplyResult(job.id, False, False, True, section_result.message or "Manual review needed.")
@@ -382,6 +397,10 @@ def _complete_application_flow(
 
         if not _click_by_role(page, "button", r"\b(next|continue|review|save and continue)\b", timeout_ms):
             return AutoApplyResult(job.id, False, False, True, "Next/Continue/Review button was not found.")
+        print(
+            f"[auto-apply] Clicked Next on '{section_label}'. Waiting for the next section to load.",
+            flush=True,
+        )
 
         page.wait_for_timeout(1_500)
         # Only treat error markers as a hard stop if Workday actually flagged
@@ -418,6 +437,19 @@ def _fill_known_section(
     if "quick apply" in body_text and not _looks_like_later_step(body_text):
         if not _upload_resume(page, job.resume_path, timeout_ms):
             return SectionResult(False, "Resume upload field was not found on Quick Apply.")
+        # Hard verification: don't advance past Quick Apply unless the
+        # resume actually attached. Workday surfaces an attachment chip
+        # (delete-file / file-uploaded) once the upload completed.
+        if not _wait_for_resume_attached(page, job.resume_path, timeout_ms):
+            return SectionResult(
+                False,
+                "Resume upload did not complete on Quick Apply (no attachment"
+                " indicator appeared). Stopped before advancing.",
+            )
+        print(
+            f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
+            flush=True,
+        )
         return SectionResult(True)
 
     if "application questions" in body_text:
@@ -608,22 +640,48 @@ def _upload_resume(page, resume_path: Path, timeout_ms: int) -> bool:
     return _set_first_file_input(page, resume_path, timeout_ms)
 
 
+def _wait_for_resume_attached(
+    page,
+    resume_path: Path,
+    timeout_ms: int,
+    poll_ms: int = 500,
+) -> bool:
+    """Block until Workday shows an attachment indicator, or time out.
+
+    Used right after _upload_resume to verify the upload finished. Workday
+    posts the file asynchronously, so we poll for the attachment chip
+    instead of trusting the input.set_input_files call alone.
+    """
+    elapsed = 0
+    deadline = max(timeout_ms, 5_000)
+    while elapsed < deadline:
+        if _resume_already_attached(page, resume_path):
+            return True
+        try:
+            page.wait_for_timeout(poll_ms)
+        except Exception:
+            return False
+        elapsed += poll_ms
+    return False
+
+
 def _resume_already_attached(page, resume_path: Path) -> bool:
     """Return True only when the resume is *attached* to this step.
 
-    Workday signals a successfully attached file by rendering a Delete /
-    Remove button alongside the file name (data-automation-id values
-    'delete-file' or 'file-uploaded'). A plain text mention of the file
-    name in the page body is **not** sufficient — the Quick Apply step
-    can list saved resumes from previous applications without anything
-    being attached to *this* application yet.
+    Workday signals a successfully attached file with one of:
+      * an attachment chip with data-automation-id 'file-uploaded',
+      * a Delete button with data-automation-id 'delete-file',
+      * a hidden <input type='file'> whose .files list is non-empty.
+
+    A plain text mention of the file name in the page body is **not**
+    sufficient — Workday's Quick Apply step lists previously-saved
+    resumes in a 'Recent files' section even when nothing is attached.
     """
     try:
         for selector in (
-            "[data-automation-id='delete-file']",
             "[data-automation-id='file-uploaded']",
-            "[data-automation-id='attachments-list'] button:has-text('Delete')",
-            "[data-automation-id='attachments-list'] button:has-text('Remove')",
+            "[data-automation-id='delete-file']",
+            "[data-automation-id='attachments-list'] [data-automation-id='file-uploaded']",
         ):
             try:
                 if page.locator(selector).count() > 0:
@@ -631,7 +689,25 @@ def _resume_already_attached(page, resume_path: Path) -> bool:
             except Exception:
                 continue
     except Exception:
-        return False
+        pass
+
+    # Fallback: ask the file input itself whether it has files attached.
+    # Playwright doesn't expose .files directly, so we use evaluate.
+    try:
+        has_file = page.evaluate(
+            "() => {\n"
+            "  const inputs = document.querySelectorAll(\"input[type='file']\");\n"
+            "  for (const i of inputs) {\n"
+            "    if (i.files && i.files.length > 0) return true;\n"
+            "  }\n"
+            "  return false;\n"
+            "}"
+        )
+        if has_file:
+            return True
+    except Exception:
+        pass
+
     return False
 
 
