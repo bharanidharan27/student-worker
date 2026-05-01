@@ -115,31 +115,57 @@ python -m src.matching.fit_scorer --rescore-db
 
 The apply CLI can work as a local checklist/status tracker or as a guarded Workday auto-apply helper. It never bypasses SSO. You must capture your own login session first.
 
-Print the ranked apply queue:
+### Pick a job, no ids required (recommended)
+
+Three no-friction ways to start an application:
+
+**Apply for the top-ranked job in one command:**
+
+```bash
+python -m src.apply_cli --auto-apply-next --headed --submit
+```
+
+This picks the highest-scoring `Strong Fit` job (`>= 80`) automatically.
+
+**Pick from a numbered menu:**
+
+```bash
+python -m src.apply_cli --pick --headed --submit
+```
+
+You will see a list like this and only need to type a single digit:
+
+```
+Pick a job to auto-apply:
+
+  [1] Office Aide - WP Carey
+      fit: 92/100 Strong Fit | location: Tempe campus | posted: 04/30/2026 | status: new
+  [2] Sun Devil Card Aide
+      fit: 88/100 Strong Fit | location: Tempe campus | posted: 04/29/2026 | status: new
+  [3] Marketing Specialist
+      fit: 84/100 Strong Fit | location: Tempe campus | posted: 04/28/2026 | status: new
+
+Type the number of the job to apply for, or 'q' to quit.
+Your pick: 2
+```
+
+**Paste a Workday URL straight from your browser address bar:**
+
+```bash
+python -m src.apply_cli --auto-apply-url "https://asu.wd1.myworkdayjobs.com/...JR12345" --headed --submit
+```
+
+The tool finds the matching saved job by URL or Workday id and runs auto-apply.
+
+### Status tracking (optional)
+
+Print the ranked apply queue, mostly for inspection:
 
 ```bash
 python -m src.apply_cli --queue --limit 10
 ```
 
-Print the apply packet for the next best job:
-
-```bash
-python -m src.apply_cli --next
-```
-
-Print the apply packet for a job:
-
-```bash
-python -m src.apply_cli --job-id 2
-```
-
-Open the stored Workday URL, if one was saved:
-
-```bash
-python -m src.apply_cli --open 2
-```
-
-Track your local progress:
+Mark a job's status after you handle it:
 
 ```bash
 python -m src.apply_cli --mark-reviewing 2
@@ -147,12 +173,7 @@ python -m src.apply_cli --mark-applied 2
 python -m src.apply_cli --mark-skipped 5 --note "Not interested"
 ```
 
-Auto-apply one job by opening Workday and uploading the recommended resume. Without `--submit`, it stops before final submission and marks the job for review:
-
-```bash
-python -m src.apply_cli --auto-apply-next --headed
-python -m src.apply_cli --auto-apply 2 --headed
-```
+(These status commands still take a numeric id from `--queue`. They are bookkeeping only and do not start an application.)
 
 Auto-apply fills the fixed Workday sections shown in the current ASU flow: work authorization, ASU enrollment, federal work study, age 18+, Hispanic/Latino disclosure, disability self-identification, and the review signature checkbox. It uses the recommended resume PDF for upload and the resume parser for experience fields.
 
@@ -170,7 +191,7 @@ Allow final submit only when Workday does not show required-field blockers:
 
 ```bash
 python -m src.apply_cli --auto-apply-next --headed --submit
-python -m src.apply_cli --auto-apply 2 --headed --submit
+python -m src.apply_cli --pick --headed --submit
 ```
 
 Auto-apply the ranked queue. By default this filters to `Strong Fit` jobs with score `>= 80`:

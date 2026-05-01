@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 import webbrowser
@@ -20,6 +21,114 @@ from src.storage.db import (
 
 
 BrowserOpener = Callable[[str], bool]
+PromptReader = Callable[[str], str]
+
+
+def render_picker_menu(rows: list[sqlite3.Row]) -> str:
+    """Render the interactive picker menu used by ``--pick``.
+
+    Each row is shown with a 1-based menu number so the user never has to
+    type or remember the underlying database id.
+    """
+    if not rows:
+        return "No actionable jobs found. Run the scraper first."
+
+    lines = ["Pick a job to auto-apply:", ""]
+    for index, row in enumerate(rows, start=1):
+        title = row["title"] or "Untitled job"
+        fit = row["fit_score"]
+        fit_label = row["fit_label"] or "-"
+        location = row["location"] or "-"
+        posted = row["posting_date"] or "-"
+        status = row["status"] or "new"
+        fit_text = f"{fit}/100 {fit_label}" if fit is not None else fit_label
+        lines.append(f"  [{index}] {title}")
+        lines.append(
+            f"      fit: {fit_text} | location: {location} |"
+            f" posted: {posted} | status: {status}"
+        )
+    lines.append("")
+    lines.append("Type the number of the job to apply for, or 'q' to quit.")
+    return "\n".join(lines)
+
+
+def parse_picker_choice(answer: str, total: int) -> int | None:
+    """Convert the user's free-text picker answer into a 1-based index.
+
+    Returns ``None`` for any input that should not advance the picker, such
+    as an empty answer, ``q``/``quit``/``exit``, or a number that is out of
+    range. Whitespace and a leading ``#`` are stripped so ``#2`` and ``2``
+    behave the same.
+    """
+    cleaned = answer.strip().lstrip("#").strip()
+    if not cleaned:
+        return None
+    if cleaned.lower() in {"q", "quit", "exit"}:
+        return None
+    if not cleaned.isdigit():
+        return None
+    choice = int(cleaned)
+    if choice < 1 or choice > total:
+        return None
+    return choice
+
+
+def extract_workday_id_from_url(url: str) -> str | None:
+    """Pull the Workday requisition id (e.g. ``JR12345``) out of a URL.
+
+    Workday URLs use a few shapes; this captures the most common ones used
+    by ASU. ``None`` is returned when no recognizable id is present.
+    """
+    if not url:
+        return None
+    patterns = [
+        r"(JR[\-_]?\d+)",
+        r"/job/[^/]+/(?:[^/]+_)?(R-?\d+)",
+        r"_(R-?\d+)",
+        r"/job/(\d{5,})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper().replace("_", "-")
+    return None
+
+
+def find_job_id_by_url(
+    url: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> tuple[int | None, str]:
+    """Match a pasted Workday URL to a saved local job id.
+
+    Returns ``(job_id, message)``. ``job_id`` is ``None`` when no saved job
+    matches; ``message`` always explains what happened so the caller can
+    surface a friendly error to the user.
+    """
+    if not url or not url.strip():
+        return None, "No URL was provided."
+
+    cleaned_url = url.strip()
+    workday_id = extract_workday_id_from_url(cleaned_url)
+
+    rows = list_apply_queue(db_path=db_path, limit=500)
+    # Direct URL match wins.
+    for row in rows:
+        if row["url"] and row["url"].strip() == cleaned_url:
+            return int(row["id"]), f"Matched job {row['id']} by URL."
+
+    # Fall back to matching the workday id parsed out of the URL.
+    if workday_id:
+        for row in rows:
+            row_workday_id = (row["workday_id"] or "").upper().replace("_", "-")
+            if row_workday_id == workday_id:
+                return int(row["id"]), f"Matched job {row['id']} by Workday id {workday_id}."
+
+    detail = f" (Workday id {workday_id})" if workday_id else ""
+    return (
+        None,
+        f"No saved job matched that URL{detail}. Run the scraper first or"
+        " use the picker.",
+    )
 
 
 def render_queue(rows: list[sqlite3.Row]) -> str:
@@ -124,6 +233,60 @@ def next_job_id(db_path: Path = DEFAULT_DB_PATH, min_score: int = 0, fit_label: 
     return None
 
 
+def _run_auto_apply_for_job_id(args, job_id: int) -> int:
+    application_profile = ApplicationProfile(applicant_name=args.applicant_name)
+    result = auto_apply_job(
+        job_id,
+        db_path=args.db_path,
+        auth_state_path=args.auth_state_path,
+        submit=args.submit,
+        headed=args.headed,
+        debug_dump_dir=args.debug_dump_dir,
+        timeout_ms=args.click_timeout_ms,
+        application_profile=application_profile,
+    )
+    print(f"Job {job_id}: {result.message}", file=sys.stdout if result.ok else sys.stderr)
+    return 0 if result.ok else 1
+
+
+def run_picker(
+    args,
+    reader: PromptReader | None = None,
+    writer: Callable[[str], None] = print,
+) -> int:
+    """Show a numbered menu and auto-apply for whatever the user picks.
+
+    The picker hides the underlying database id entirely; the user only
+    sees a list of `[1] Title` rows and types a single digit. Hitting
+    enter without typing anything, or typing ``q``, exits cleanly.
+    """
+    rows = list_apply_queue(db_path=args.db_path, limit=args.limit)
+    if not rows:
+        writer("No actionable jobs found. Run the scraper first.")
+        return 1
+
+    writer(render_picker_menu(rows))
+    # Resolve ``input`` lazily so test suites that monkeypatch
+    # ``builtins.input`` (and any future stdin replacement) take effect.
+    prompt_reader = reader if reader is not None else input
+    try:
+        answer = prompt_reader("Your pick: ")
+    except EOFError:
+        writer("\nNo selection. Exiting.")
+        return 1
+
+    choice = parse_picker_choice(answer, len(rows))
+    if choice is None:
+        writer("No valid selection. Exiting.")
+        return 1
+
+    selected = rows[choice - 1]
+    job_id = int(selected["id"])
+    title = selected["title"] or "Untitled job"
+    writer(f"Applying for: {title}")
+    return _run_auto_apply_for_job_id(args, job_id)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Manual apply queue for saved jobs.")
     parser.add_argument("--queue", action="store_true", help="Print ranked actionable jobs.")
@@ -131,15 +294,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--job-id", type=int, help="Print an apply packet for a saved job.")
     parser.add_argument("--open", type=int, metavar="JOB_ID", help="Open the stored Workday URL.")
     parser.add_argument(
+        "--pick",
+        action="store_true",
+        help="Show a numbered list of jobs and auto-apply for the one you pick.",
+    )
+    parser.add_argument(
+        "--auto-apply-url",
+        metavar="URL",
+        help="Auto-apply by pasting a Workday job URL instead of looking up an id.",
+    )
+    parser.add_argument(
         "--auto-apply",
         type=int,
         metavar="JOB_ID",
-        help="Use Playwright to open Workday and upload the recommended resume.",
+        help=argparse.SUPPRESS,  # advanced, hidden from the default --help output
     )
     parser.add_argument(
         "--auto-apply-next",
         action="store_true",
-        help="Auto-apply the next best queued job. Defaults to Strong Fit with score >= 80.",
+        help="Auto-apply the top-ranked Strong Fit job. The simplest one-shot option.",
     )
     parser.add_argument(
         "--auto-apply-queue",
@@ -202,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         args.next,
         args.job_id is not None,
         args.open is not None,
+        args.pick,
+        args.auto_apply_url is not None,
         args.auto_apply is not None,
         args.auto_apply_next,
         args.auto_apply_queue,
@@ -238,39 +413,26 @@ def main(argv: list[str] | None = None) -> int:
         print(message, file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 1
 
+    if args.pick:
+        return run_picker(args)
+
+    if args.auto_apply_url is not None:
+        job_id, message = find_job_id_by_url(args.auto_apply_url, db_path=args.db_path)
+        if job_id is None:
+            print(message, file=sys.stderr)
+            return 1
+        print(message)
+        return _run_auto_apply_for_job_id(args, job_id)
+
     if args.auto_apply is not None:
-        application_profile = ApplicationProfile(applicant_name=args.applicant_name)
-        result = auto_apply_job(
-            args.auto_apply,
-            db_path=args.db_path,
-            auth_state_path=args.auth_state_path,
-            submit=args.submit,
-            headed=args.headed,
-            debug_dump_dir=args.debug_dump_dir,
-            timeout_ms=args.click_timeout_ms,
-            application_profile=application_profile,
-        )
-        print(result.message, file=sys.stdout if result.ok else sys.stderr)
-        return 0 if result.ok else 1
+        return _run_auto_apply_for_job_id(args, args.auto_apply)
 
     if args.auto_apply_next:
         job_id = next_job_id(args.db_path, min_score=args.min_score, fit_label=args.fit_label)
         if job_id is None:
             print("No job matched the auto-apply-next filters.", file=sys.stderr)
             return 1
-        application_profile = ApplicationProfile(applicant_name=args.applicant_name)
-        result = auto_apply_job(
-            job_id,
-            db_path=args.db_path,
-            auth_state_path=args.auth_state_path,
-            submit=args.submit,
-            headed=args.headed,
-            debug_dump_dir=args.debug_dump_dir,
-            timeout_ms=args.click_timeout_ms,
-            application_profile=application_profile,
-        )
-        print(f"Job {job_id}: {result.message}", file=sys.stdout if result.ok else sys.stderr)
-        return 0 if result.ok else 1
+        return _run_auto_apply_for_job_id(args, job_id)
 
     if args.auto_apply_queue:
         application_profile = ApplicationProfile(applicant_name=args.applicant_name)
