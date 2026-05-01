@@ -266,9 +266,15 @@ class _ResumeUploadFakePage:
     treated as a later step).
     """
 
-    def __init__(self, body_text: str, file_input_count: int = 1):
+    def __init__(
+        self,
+        body_text: str,
+        file_input_count: int = 1,
+        attached_selector: str | None = None,
+    ):
         self._body_text = body_text
         self._file_input_count = file_input_count
+        self._attached_selector = attached_selector
         self.set_input_files_calls: list[str] = []
         self.remove_button_clicks = 0
 
@@ -298,6 +304,14 @@ class _ResumeUploadFakePage:
         self._remove_button = RemoveButton()
 
     def locator(self, selector: str):
+        if self._attached_selector is not None and selector == self._attached_selector:
+            class _Present:
+                first = property(lambda self: self)
+
+                def count(self):
+                    return 1
+
+            return _Present()
         if selector == "input[type='file']":
             class _Wrapper:
                 def __init__(self, inner):
@@ -375,17 +389,41 @@ def test_quick_apply_step_uploads_only_when_no_existing_resume(tmp_path: Path) -
     assert page.remove_button_clicks == 0
 
 
-def test_upload_resume_skips_when_already_attached(tmp_path: Path) -> None:
+def test_upload_resume_uploads_even_when_filename_mentioned_in_recents(
+    tmp_path: Path,
+) -> None:
+    """Body-text mention alone must not block the upload.
+
+    Workday's Quick Apply step lists previously-saved resumes in a
+    'Recent' section. Earlier code treated any mention of the filename
+    as 'already attached' and skipped the upload entirely — leaving the
+    application without a resume.
+    """
     resume_path = tmp_path / "Bharanidharan_Resume.pdf"
     resume_path.write_text("resume", encoding="utf-8")
 
-    # File mentioned twice (e.g. Quick Apply preview + listing). The previous
-    # implementation clicked Remove buttons in this case and wiped data.
     page = _ResumeUploadFakePage(
         body_text=(
-            "Quick Apply Bharanidharan_Resume.pdf preview"
-            " Bharanidharan_Resume.pdf attached"
+            "Quick Apply Recent files Bharanidharan_Resume.pdf"
+            " Use a previous resume Bharanidharan_Resume.pdf"
         )
+    )
+
+    assert _upload_resume(page, resume_path, timeout_ms=1_000) is True
+    assert page.set_input_files_calls == [str(resume_path)]
+    assert page.remove_button_clicks == 0
+
+
+def test_upload_resume_skips_when_attachment_indicator_present(
+    tmp_path: Path,
+) -> None:
+    """With a real attachment indicator on the page, do not re-upload."""
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    page = _ResumeUploadFakePage(
+        body_text="Quick Apply Bharanidharan_Resume.pdf attached",
+        attached_selector="[data-automation-id='delete-file']",
     )
 
     assert _upload_resume(page, resume_path, timeout_ms=1_000) is True

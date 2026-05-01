@@ -575,15 +575,19 @@ def _looks_like_later_step(body_text: str) -> bool:
 
 
 def _upload_resume(page, resume_path: Path, timeout_ms: int) -> bool:
-    # Only attempt the upload when the Quick Apply step actually has an
-    # empty file input. Bailing out the moment we see the file mentioned
-    # avoids two scenarios that both delete user data:
-    #   1) Re-uploading on My Experience (the page also mentions the file
-    #      in the Resume/CV subsection).
-    #   2) Calling _remove_uploaded_resume_files indiscriminately, which
-    #      clicks every Remove button on the page — including the ones on
-    #      auto-filled Work Experience and Education cards.
-    if _count_uploaded_resume_mentions(page, resume_path) >= 1:
+    # Caller (_fill_known_section) already guarantees this is the Quick
+    # Apply step and not a later step, so we never need to worry about
+    # auto-filled Work Experience / Education cards on My Experience.
+    #
+    # Only skip the upload when the resume is *actually attached* to this
+    # Quick Apply step. The signal for that is an explicit attachment
+    # indicator on the page — a Remove/Delete control or Workday's
+    # ``file-uploaded`` widget — paired with the file name. The plain
+    # body-text mention is unreliable because Workday's Quick Apply step
+    # also lists previously-saved resumes in a "Recent" / "Use a previous
+    # resume" section, which would otherwise short-circuit the upload
+    # before it ever happens.
+    if _resume_already_attached(page, resume_path):
         return True
 
     if _set_first_file_input(page, resume_path, timeout_ms):
@@ -602,6 +606,33 @@ def _upload_resume(page, resume_path: Path, timeout_ms: int) -> bool:
     )
     page.wait_for_timeout(500)
     return _set_first_file_input(page, resume_path, timeout_ms)
+
+
+def _resume_already_attached(page, resume_path: Path) -> bool:
+    """Return True only when the resume is *attached* to this step.
+
+    Workday signals a successfully attached file by rendering a Delete /
+    Remove button alongside the file name (data-automation-id values
+    'delete-file' or 'file-uploaded'). A plain text mention of the file
+    name in the page body is **not** sufficient — the Quick Apply step
+    can list saved resumes from previous applications without anything
+    being attached to *this* application yet.
+    """
+    try:
+        for selector in (
+            "[data-automation-id='delete-file']",
+            "[data-automation-id='file-uploaded']",
+            "[data-automation-id='attachments-list'] button:has-text('Delete')",
+            "[data-automation-id='attachments-list'] button:has-text('Remove')",
+        ):
+            try:
+                if page.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
 
 
 def _resume_already_uploaded(page, resume_path: Path) -> bool:
