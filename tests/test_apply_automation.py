@@ -176,18 +176,59 @@ def test_my_experience_is_not_a_manual_advance_section() -> None:
 
 
 def test_current_section_label_recognises_workday_steps() -> None:
+    # When a string is passed (legacy/test path), the function does a
+    # simple substring match in declaration order. Real production
+    # callers pass a Page object so the heading-based detector runs.
     assert _current_section_label("Quick Apply please upload") == "quick apply"
-    # Sidebar carries every prior label — the *latest* match is the real page.
-    assert (
-        _current_section_label(
-            "Quick Apply My Experience Work Experience"
-        )
-        == "my experience"
-    )
     assert (
         _current_section_label("Application Questions Are you eligible")
         == "application questions"
     )
+
+
+def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
+    """With a real Page-like object, the heading wins over body text.
+
+    Workday's sidebar lists every section label on every page, so the
+    detector must look at the active heading (rendered in the form, not
+    the sidebar) to know where we really are.
+    """
+
+    class HeadingPage:
+        def __init__(self, heading: str, body: str):
+            self._heading = heading
+            self._body = body
+
+        def locator(self, selector: str):
+            outer = self
+
+            class _H2:
+                first = property(lambda self: self)
+
+                def count(self_inner) -> int:
+                    return 1 if outer._heading else 0
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    return outer._heading
+
+            class _Body:
+                first = property(lambda self: self)
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    return outer._body
+
+            if selector == "body":
+                return _Body()
+            return _H2()
+
+    page = HeadingPage(
+        heading="My Experience",
+        body=(
+            "Quick Apply My Experience Application Questions Voluntary"
+            " Disclosures Self Identify Review"
+        ),
+    )
+    assert _current_section_label(page) == "my experience"
     assert _current_section_label("Random unrelated text") is None
 
 
@@ -278,10 +319,12 @@ class _ResumeUploadFakePage:
         body_text: str,
         file_input_count: int = 1,
         attached_selector: str | None = None,
+        heading: str | None = None,
     ):
         self._body_text = body_text
         self._file_input_count = file_input_count
         self._attached_selector = attached_selector
+        self._heading = heading
         self.set_input_files_calls: list[str] = []
         self.remove_button_clicks = 0
 
@@ -319,6 +362,19 @@ class _ResumeUploadFakePage:
                     return 1
 
             return _Present()
+        if selector in ("main h2", "[role='main'] h2", "h2[data-automation-id]", "h2"):
+            outer = self
+
+            class _H2:
+                first = property(lambda self: self)
+
+                def count(self_inner) -> int:
+                    return 1 if outer._heading else 0
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    return outer._heading or ""
+
+            return _H2()
         if selector == "input[type='file']":
             class _Wrapper:
                 def __init__(self, inner):
@@ -376,7 +432,7 @@ def test_my_experience_does_not_re_upload_or_remove(tmp_path: Path) -> None:
         " State University Resume/CV and Cover Letter Bharanidharan_Resume.pdf"
         " Upload"
     )
-    page = _ResumeUploadFakePage(body_text=body_text)
+    page = _ResumeUploadFakePage(body_text=body_text, heading="My Experience")
     job = _job_with_resume(resume_path)
     profile = ApplicationProfile()
 

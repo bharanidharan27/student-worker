@@ -277,26 +277,75 @@ MANUAL_ADVANCE_TIMEOUT_MS = 15 * 60 * 1_000
 MANUAL_ADVANCE_POLL_MS = 1_000
 
 
-def _current_section_label(body_text: str) -> str | None:
-    """Return the *current* Workday section, not the first sidebar match.
+_SECTION_LABELS: tuple[str, ...] = (
+    "quick apply",
+    "my experience",
+    "application questions",
+    "voluntary disclosures",
+    "voluntary personal information",
+    "self identify",
+    "self-identification of disability",
+    "review",
+)
 
-    The left sidebar repeats every section label on every page, so we
-    check from the latest section backward and return the first one
-    found. That gives us the page the user is actually on.
+
+def _current_section_label(body_text_or_page) -> str | None:
+    """Return the current Workday section.
+
+    Workday's left sidebar lists every section label on every page, so a
+    plain body-text scan can't tell us where we actually are. When given a
+    Playwright page, prefer the page's main heading (an ``<h2>`` rendered
+    inside the form, never inside the sidebar). When given a string
+    (legacy/test path), fall back to a substring match.
     """
-    lowered = body_text.lower()
-    for label in (
-        "review",
-        "self-identification of disability",
-        "self identify",
-        "voluntary personal information",
-        "voluntary disclosures",
-        "application questions",
-        "my experience",
-        "quick apply",
-    ):
+    if isinstance(body_text_or_page, str):
+        return _section_from_text(body_text_or_page)
+
+    page = body_text_or_page
+    heading = _read_active_section_heading(page)
+    if heading is not None:
+        match = _section_from_text(heading)
+        if match is not None:
+            return match
+    # Fallback to scanning the body text if no heading is visible.
+    try:
+        return _section_from_text(_safe_body_text(page))
+    except Exception:
+        return None
+
+
+def _section_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    for label in _SECTION_LABELS:
         if label in lowered:
             return label
+    return None
+
+
+def _read_active_section_heading(page) -> str | None:
+    """Return the visible page heading text, ignoring the sidebar.
+
+    Workday renders the active section title in an ``<h2>`` inside the
+    main form panel. The sidebar uses ``<a>`` and progress nodes — not
+    headings — so an ``h2`` query is sidebar-immune.
+    """
+    try:
+        for selector in (
+            "main h2",
+            "[role='main'] h2",
+            "h2[data-automation-id]",
+            "h2",
+        ):
+            try:
+                loc = page.locator(selector).first
+                if loc.count() > 0:
+                    text = (loc.inner_text(timeout=500) or "").strip()
+                    if text:
+                        return text
+            except Exception:
+                continue
+    except Exception:
+        return None
     return None
 
 
@@ -308,6 +357,8 @@ def _wait_for_user_to_advance(
 ) -> bool:
     """Poll until the active Workday section changes away from ``current_section``.
 
+    Uses the page heading (not body text) to detect the change so the
+    sidebar that lists every label on every page can't fool us.
     Returns True when the section advanced, False when the timeout elapsed.
     """
     elapsed = 0
@@ -317,13 +368,16 @@ def _wait_for_user_to_advance(
         except Exception:
             return False
         elapsed += poll_ms
-        body_text = _safe_body_text(page).lower()
-        if current_section not in body_text:
+        active = _current_section_label(page)
+        if active is not None and active != current_section:
             return True
-        # If the user already moved to the review/signature step, treat that
-        # as advancing even if the sidebar still mentions the prior label.
-        if _looks_like_review_page(body_text):
-            return True
+        # If the user reached the review/signature step, treat that as
+        # advancing even if the heading hasn't been read yet.
+        try:
+            if _looks_like_review_page(_safe_body_text(page)):
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -336,13 +390,46 @@ def _complete_application_flow(
     debug_dump_dir: Path | None,
     max_steps: int = 12,
 ) -> AutoApplyResult:
+    last_section_label: str | None = None
+    repeated_section_count = 0
     for step_index in range(max_steps):
-        body_text = _safe_body_text(page)
-        section_label = _current_section_label(body_text)
+        section_label = _current_section_label(page)
         print(
             f"[auto-apply] Step {step_index + 1}: section = {section_label!r}.",
             flush=True,
         )
+
+        # Detect 'Next was clicked but Workday silently kept us on the
+        # same section' (e.g. My Experience with an empty required
+        # Source dropdown). Hand control to the user instead of looping.
+        if section_label is not None and section_label == last_section_label:
+            repeated_section_count += 1
+            if repeated_section_count >= 1:
+                print(
+                    f"[auto-apply] Paused on '{section_label}': Workday did not"
+                    " advance after clicking Next. Please fill the remaining"
+                    " required fields (Source, Country, Degree, etc.) and click"
+                    " Save and Continue. The tool will resume automatically.",
+                    flush=True,
+                )
+                advanced = _wait_for_user_to_advance(page, section_label)
+                if not advanced:
+                    _write_debug_dump(page, debug_dump_dir, job.id, "section_stuck_timeout")
+                    return AutoApplyResult(
+                        job.id,
+                        False,
+                        False,
+                        True,
+                        f"Timed out waiting for the user to advance past '{section_label}'.",
+                    )
+                page.wait_for_timeout(1_000)
+                last_section_label = None
+                repeated_section_count = 0
+                continue
+        else:
+            repeated_section_count = 0
+        last_section_label = section_label
+
         section_result = _fill_known_section(page, job, profile, timeout_ms)
         if not section_result.ok:
             return AutoApplyResult(job.id, False, False, True, section_result.message or "Manual review needed.")
@@ -372,7 +459,6 @@ def _complete_application_flow(
         # cannot supply (Source, Country, Degree, etc.). Hand control back to
         # the user, wait for them to click Save and Continue themselves, then
         # resume auto-filling the remaining sections.
-        section_label = _current_section_label(body_text)
         if section_label in MANUAL_ADVANCE_SECTIONS:
             print(
                 f"[auto-apply] Paused on '{section_label}'. Please review the"
@@ -419,22 +505,24 @@ def _fill_known_section(
     profile: ApplicationProfile,
     timeout_ms: int,
 ) -> SectionResult:
+    # Use the heading-based label as the primary dispatch — Workday's
+    # left sidebar lists every step on every page, so a body-text scan
+    # cannot tell us which page we're really on.
+    section_label = _current_section_label(page)
     body_text = _safe_body_text(page).lower()
 
-    # The Quick Apply label appears in the left sidebar nav on every step of
-    # the application (Quick Apply / My Experience / Application Questions /
-    # ...). To tell the *current* step apart from the sidebar, prefer the
-    # later-page checks first, and only treat this as Quick Apply when no
-    # later-step marker is on the page.
-    if "my experience" in body_text:
+    # Test/legacy callers that pass a fake page may not have a heading;
+    # fall back to substring matching when the heading lookup yields None.
+    if section_label is None:
+        section_label = _section_from_text(body_text)
+
+    if section_label == "my experience":
         # Workday's resume parser pre-fills Work Experience, Education, and
-        # the Resume/CV subsection from the Quick Apply upload. Do NOT touch
-        # the upload again here — clicking Remove on My Experience nukes the
-        # auto-filled cards because those cards each have their own Remove
-        # button.
+        # the Resume/CV subsection from the Quick Apply upload. Do NOT
+        # touch the upload again here.
         return SectionResult(True)
 
-    if "quick apply" in body_text and not _looks_like_later_step(body_text):
+    if section_label == "quick apply":
         if not _upload_resume(page, job.resume_path, timeout_ms):
             return SectionResult(False, "Resume upload field was not found on Quick Apply.")
         # Hard verification: don't advance past Quick Apply unless the
@@ -452,7 +540,7 @@ def _fill_known_section(
         )
         return SectionResult(True)
 
-    if "application questions" in body_text:
+    if section_label == "application questions" or "application questions" in body_text:
         _answer_dropdown_by_question(
             page,
             r"eligible to work in the united states without asu sponsorship",
@@ -479,15 +567,15 @@ def _fill_known_section(
         )
         return SectionResult(True)
 
-    if "voluntary personal information" in body_text or "hispanic or latino" in body_text:
+    if section_label in {"voluntary personal information", "voluntary disclosures"} or "hispanic or latino" in body_text:
         _answer_radio_by_question(page, r"hispanic or latino", profile.hispanic_or_latino, timeout_ms)
         return SectionResult(True)
 
-    if "self-identification of disability" in body_text or "cc-305" in body_text:
+    if section_label in {"self identify", "self-identification of disability"} or "cc-305" in body_text:
         _fill_disability_section(page, profile, timeout_ms)
         return SectionResult(True)
 
-    if _looks_like_review_page(body_text):
+    if section_label == "review" or _looks_like_review_page(body_text):
         _check_review_signature(page, timeout_ms)
         return SectionResult(True)
 
