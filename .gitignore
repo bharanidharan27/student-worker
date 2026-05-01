@@ -3,7 +3,8 @@ __pycache__/
 .env
 .venv/
 venv/
-data/jobs.sqlite
+data/*
+!data/.gitkeep
 outputs/
 playwright/.auth/
 *.log
