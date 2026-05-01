@@ -7,8 +7,11 @@ from src.apply_automation import (
     _count_uploaded_resume_mentions,
     _current_section_label,
     _extract_applied_marker,
+    _fill_known_section,
+    _looks_like_later_step,
     _looks_like_review_page,
     _resume_already_uploaded,
+    _upload_resume,
     _wait_for_user_to_advance,
     auto_apply_job,
     auto_apply_queue,
@@ -225,6 +228,169 @@ def test_wait_for_user_to_advance_times_out_when_section_stays() -> None:
         FakePage(), "my experience", timeout_ms=300, poll_ms=100
     )
     assert advanced is False
+
+
+def test_looks_like_later_step_disambiguates_sidebar_quick_apply() -> None:
+    sidebar_only = (
+        "quick apply my experience application questions voluntary"
+        " disclosures self identify review"
+    )
+    quick_apply_step = "quick apply please read drop file here select files"
+
+    assert _looks_like_later_step(sidebar_only) is True
+    assert _looks_like_later_step(quick_apply_step) is False
+
+
+def _job_with_resume(resume_path: Path):
+    """Build a minimal AutoApplyJob-shaped object for section tests."""
+    from src.apply_automation import AutoApplyJob
+
+    return AutoApplyJob(
+        id=1,
+        workday_id="JR-test",
+        title="Office Aide",
+        url="https://example/job/JR-test",
+        resume_path=resume_path,
+        fit_score=90,
+        fit_label="Strong Fit",
+    )
+
+
+class _ResumeUploadFakePage:
+    """Test double that records every Workday locator + click interaction.
+
+    The body text is configurable per scenario so we can cover the Quick
+    Apply step (resume needs uploading), the Quick Apply step after the
+    upload succeeded (resume already mentioned once), and the My
+    Experience step (Quick Apply word still in sidebar but page must be
+    treated as a later step).
+    """
+
+    def __init__(self, body_text: str, file_input_count: int = 1):
+        self._body_text = body_text
+        self._file_input_count = file_input_count
+        self.set_input_files_calls: list[str] = []
+        self.remove_button_clicks = 0
+
+        outer = self
+
+        class FileInput:
+            def count(self) -> int:
+                return outer._file_input_count
+
+            def set_input_files(self, path: str, timeout: int) -> None:
+                outer.set_input_files_calls.append(path)
+
+        class Body:
+            def inner_text(self, timeout: int) -> str:
+                return outer._body_text
+
+            @property
+            def first(self):
+                return self
+
+        class RemoveButton:
+            def click(self, timeout: int) -> None:
+                outer.remove_button_clicks += 1
+
+        self._file_input = FileInput()
+        self._body = Body()
+        self._remove_button = RemoveButton()
+
+    def locator(self, selector: str):
+        if selector == "input[type='file']":
+            class _Wrapper:
+                def __init__(self, inner):
+                    self._inner = inner
+                    self.first = inner
+
+                def count(self):
+                    return self._inner.count()
+
+            return _Wrapper(self._file_input)
+        if selector == "body":
+            return self._body
+        # any other locator returns an empty stub
+        class Empty:
+            first = property(lambda self: self)
+
+            def count(self):
+                return 0
+
+            def click(self, timeout):
+                return None
+
+        return Empty()
+
+    def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+    def get_by_role(self, role, name=None):
+        # Return an object that simulates a Remove button being click-able.
+        # We never want this called from My Experience because that's the bug.
+        return self._remove_button
+
+
+def test_my_experience_does_not_re_upload_or_remove(tmp_path: Path) -> None:
+    """Regression: on My Experience, the tool must not touch the resume.
+
+    Previously the section detector matched 'quick apply' in the left
+    sidebar text and re-entered the upload path. _upload_resume then saw
+    the resume mentioned twice (Resume/CV subsection + sidebar) and
+    indiscriminately clicked every Remove button on the page, deleting
+    every auto-filled Work Experience and Education card.
+    """
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    body_text = (
+        "Quick Apply My Experience Application Questions Voluntary Disclosures"
+        " Self Identify Review Source Current Worker Work Experience Job Title"
+        " Member Technical Staff Company Zoho Corporation Education Arizona"
+        " State University Resume/CV and Cover Letter Bharanidharan_Resume.pdf"
+        " Upload"
+    )
+    page = _ResumeUploadFakePage(body_text=body_text)
+    job = _job_with_resume(resume_path)
+    profile = ApplicationProfile()
+
+    result = _fill_known_section(page, job, profile, timeout_ms=1_000)
+
+    assert result.ok is True
+    assert page.set_input_files_calls == [], "resume must not be re-uploaded on My Experience"
+    assert page.remove_button_clicks == 0, "Remove buttons must not be clicked on My Experience"
+
+
+def test_quick_apply_step_uploads_only_when_no_existing_resume(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    # Quick Apply step, body does NOT contain a later-step marker, and the
+    # resume has not been attached yet — the file input should be set.
+    page = _ResumeUploadFakePage(
+        body_text="Quick Apply Please read Drop file here Select files"
+    )
+    assert _upload_resume(page, resume_path, timeout_ms=1_000) is True
+    assert page.set_input_files_calls == [str(resume_path)]
+    assert page.remove_button_clicks == 0
+
+
+def test_upload_resume_skips_when_already_attached(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    # File mentioned twice (e.g. Quick Apply preview + listing). The previous
+    # implementation clicked Remove buttons in this case and wiped data.
+    page = _ResumeUploadFakePage(
+        body_text=(
+            "Quick Apply Bharanidharan_Resume.pdf preview"
+            " Bharanidharan_Resume.pdf attached"
+        )
+    )
+
+    assert _upload_resume(page, resume_path, timeout_ms=1_000) is True
+    assert page.set_input_files_calls == []
+    assert page.remove_button_clicks == 0
 
 
 def test_count_uploaded_resume_mentions_detects_duplicates(tmp_path: Path) -> None:

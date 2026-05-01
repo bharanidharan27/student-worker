@@ -402,12 +402,22 @@ def _fill_known_section(
 ) -> SectionResult:
     body_text = _safe_body_text(page).lower()
 
-    if "quick apply" in body_text:
-        if not _upload_resume(page, job.resume_path, timeout_ms):
-            return SectionResult(False, "Resume upload field was not found on Quick Apply.")
+    # The Quick Apply label appears in the left sidebar nav on every step of
+    # the application (Quick Apply / My Experience / Application Questions /
+    # ...). To tell the *current* step apart from the sidebar, prefer the
+    # later-page checks first, and only treat this as Quick Apply when no
+    # later-step marker is on the page.
+    if "my experience" in body_text:
+        # Workday's resume parser pre-fills Work Experience, Education, and
+        # the Resume/CV subsection from the Quick Apply upload. Do NOT touch
+        # the upload again here — clicking Remove on My Experience nukes the
+        # auto-filled cards because those cards each have their own Remove
+        # button.
         return SectionResult(True)
 
-    if "my experience" in body_text:
+    if "quick apply" in body_text and not _looks_like_later_step(body_text):
+        if not _upload_resume(page, job.resume_path, timeout_ms):
+            return SectionResult(False, "Resume upload field was not found on Quick Apply.")
         return SectionResult(True)
 
     if "application questions" in body_text:
@@ -545,12 +555,36 @@ def _ancestor_contains_text(locator, text: str) -> bool:
         return False
 
 
+def _looks_like_later_step(body_text: str) -> bool:
+    """True when the page is past the Quick Apply step.
+
+    The Quick Apply heading text appears in Workday's left-side navigation
+    sidebar on every later step. We use the *content* headings unique to
+    later steps to disambiguate.
+    """
+    later_markers = (
+        "my experience",
+        "application questions",
+        "voluntary disclosures",
+        "voluntary personal information",
+        "self identify",
+        "self-identification of disability",
+        "legal equivalent of a signature",
+    )
+    return any(marker in body_text for marker in later_markers)
+
+
 def _upload_resume(page, resume_path: Path, timeout_ms: int) -> bool:
-    existing_count = _count_uploaded_resume_mentions(page, resume_path)
-    if existing_count == 1:
+    # Only attempt the upload when the Quick Apply step actually has an
+    # empty file input. Bailing out the moment we see the file mentioned
+    # avoids two scenarios that both delete user data:
+    #   1) Re-uploading on My Experience (the page also mentions the file
+    #      in the Resume/CV subsection).
+    #   2) Calling _remove_uploaded_resume_files indiscriminately, which
+    #      clicks every Remove button on the page — including the ones on
+    #      auto-filled Work Experience and Education cards.
+    if _count_uploaded_resume_mentions(page, resume_path) >= 1:
         return True
-    if existing_count > 1:
-        _remove_uploaded_resume_files(page, timeout_ms)
 
     if _set_first_file_input(page, resume_path, timeout_ms):
         return True
