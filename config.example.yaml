@@ -1,0 +1,20 @@
+workday:
+  student_jobs_url: "https://www.myworkday.com/asu/d/task/1422$3898.htmld"
+  auth_state_path: "playwright/.auth/asu_workday.json"
+
+user:
+  name: "Bharanidharan Maheswaran"
+  email: "bmahesw1@asu.edu"
+  phone: "602-696-6398"
+  location: "Tempe, AZ"
+  linkedin: "linkedin.com/in/bharanidharan-maheswaran/"
+
+generation:
+  output_format: "docx"
+  max_resume_pages: 1
+  require_manual_review: true
+
+scoring:
+  strong_fit_threshold: 80
+  possible_fit_threshold: 60
+

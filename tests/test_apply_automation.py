@@ -1,0 +1,181 @@
+from pathlib import Path
+
+from src.apply_automation import (
+    ApplicationProfile,
+    AutoApplyResult,
+    _count_uploaded_resume_mentions,
+    _extract_applied_marker,
+    _looks_like_review_page,
+    _resume_already_uploaded,
+    auto_apply_job,
+    auto_apply_queue,
+)
+from src.storage.db import get_connection, upsert_job
+from src.storage.models import JobRecord
+
+
+def _job(
+    workday_id: str,
+    title: str,
+    resume_path: Path,
+    fit_score: int = 90,
+    fit_label: str = "Strong Fit",
+    status: str = "new",
+) -> JobRecord:
+    return JobRecord(
+        workday_id=workday_id,
+        title=title,
+        location="Tempe campus",
+        posting_date="04/30/2026",
+        url=f"https://www.myworkday.com/asu/job/{workday_id}",
+        raw_description=f"{title} role.",
+        fit_score=fit_score,
+        fit_label=fit_label,
+        job_family="office_admin",
+        recommended_resume_type="admin_office",
+        recommended_resume_name=resume_path.name,
+        recommended_resume_path=str(resume_path),
+        status=status,
+    )
+
+
+def test_auto_apply_blocks_missing_resume_and_marks_reviewing(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+    job_id = upsert_job(_job("JR-missing", "Office Aide", tmp_path / "missing.pdf"), db_path)
+
+    result = auto_apply_job(job_id, db_path=db_path, auth_state_path=auth_path)
+
+    assert result.ok is False
+    assert result.needs_review is True
+    assert "does not exist" in result.message
+    with get_connection(db_path) as connection:
+        row = connection.execute("SELECT status, application_notes FROM jobs WHERE id = ?;", (job_id,)).fetchone()
+    assert row["status"] == "reviewing"
+    assert "Auto apply blocked" in row["application_notes"]
+
+
+def test_auto_apply_uses_driver_and_marks_applied_on_submit(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+    resume_path = tmp_path / "resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+    job_id = upsert_job(_job("JR-submit", "Office Aide", resume_path), db_path)
+
+    def driver(job, submit, headed, debug_dump_dir, auth_state_path, timeout_ms, profile):
+        assert job.id == job_id
+        assert submit is True
+        assert headed is False
+        assert job.resume_path == resume_path
+        assert profile.applicant_name == "Bharanidharan Maheswaran"
+        return AutoApplyResult(job.id, True, True, False, "Application submitted by test driver.")
+
+    result = auto_apply_job(
+        job_id,
+        db_path=db_path,
+        auth_state_path=auth_path,
+        submit=True,
+        headed=False,
+        driver=driver,
+    )
+
+    assert result.submitted is True
+    with get_connection(db_path) as connection:
+        row = connection.execute("SELECT status, application_notes, applied_at FROM jobs WHERE id = ?;", (job_id,)).fetchone()
+    assert row["status"] == "applied"
+    assert row["application_notes"] == "Application submitted by test driver."
+    assert row["applied_at"]
+
+
+def test_auto_apply_queue_filters_to_strong_fit_min_score(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+    resume_path = tmp_path / "resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+    upsert_job(_job("JR-strong", "Strong Office Aide", resume_path, 90, "Strong Fit"), db_path)
+    upsert_job(_job("JR-low", "Low Office Aide", resume_path, 70, "Strong Fit"), db_path)
+    upsert_job(_job("JR-possible", "Possible Office Aide", resume_path, 95, "Possible Fit"), db_path)
+
+    called: list[int] = []
+
+    def driver(job, submit, headed, debug_dump_dir, auth_state_path, timeout_ms, profile):
+        called.append(job.id)
+        return AutoApplyResult(job.id, True, False, True, "Resume uploaded by test driver.")
+
+    results = auto_apply_queue(
+        db_path=db_path,
+        auth_state_path=auth_path,
+        limit=10,
+        min_score=80,
+        fit_label="Strong Fit",
+        driver=driver,
+    )
+
+    assert len(results) == 1
+    assert len(called) == 1
+    assert results[0].needs_review is True
+
+
+def test_application_profile_defaults_match_known_fixed_answers() -> None:
+    profile = ApplicationProfile()
+
+    assert profile.work_authorization == "Yes"
+    assert profile.enrolled_at_asu == "Yes"
+    assert profile.federal_work_study == "No"
+    assert profile.age_18_or_older == "Yes"
+    assert profile.hispanic_or_latino == "No"
+    assert profile.disability_status.startswith("No, I do not have a disability")
+
+
+def test_review_detection_does_not_match_sidebar_only_text() -> None:
+    quick_apply_text = "Quick Apply My Experience Application Questions Review Your job application will be saved."
+    review_text = "Review I understand that checking this box is the legal equivalent of a signature accepting the terms above."
+
+    assert _looks_like_review_page(quick_apply_text) is False
+    assert _looks_like_review_page(review_text) is True
+
+
+def test_extract_applied_marker_detects_existing_workday_application() -> None:
+    text = "Tech Devil Consultant Applied 04/30/2026, 1:08 PM Job Details"
+
+    assert _extract_applied_marker(text) == "Applied 04/30/2026, 1:08 PM"
+
+
+def test_extract_applied_marker_accepts_lowercase_ui_text() -> None:
+    text = "Tech Devil Consultant applied 04/30/2026, 1:08 PM Job Details"
+
+    assert _extract_applied_marker(text) == "applied 04/30/2026, 1:08 PM"
+
+
+def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Maheswaran_Resume.pdf"
+
+    class FakePage:
+        def locator(self, selector):
+            class Body:
+                def inner_text(self, timeout):
+                    return "Uploaded file Bharanidharan_Maheswaran_Resume.pdf"
+
+            return Body()
+
+    assert _resume_already_uploaded(FakePage(), resume_path) is True
+
+
+def test_count_uploaded_resume_mentions_detects_duplicates(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Maheswaran_Resume.pdf"
+
+    class FakePage:
+        def locator(self, selector):
+            class Body:
+                def inner_text(self, timeout):
+                    return (
+                        "Bharanidharan_Maheswaran_Resume.pdf "
+                        "Bharanidharan_Maheswaran_Resume.pdf"
+                    )
+
+            return Body()
+
+    assert _count_uploaded_resume_mentions(FakePage(), resume_path) == 2
