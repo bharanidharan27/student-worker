@@ -3,10 +3,13 @@ from pathlib import Path
 from src.apply_automation import (
     ApplicationProfile,
     AutoApplyResult,
+    MANUAL_ADVANCE_SECTIONS,
     _count_uploaded_resume_mentions,
+    _current_section_label,
     _extract_applied_marker,
     _looks_like_review_page,
     _resume_already_uploaded,
+    _wait_for_user_to_advance,
     auto_apply_job,
     auto_apply_queue,
 )
@@ -162,6 +165,66 @@ def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:
             return Body()
 
     assert _resume_already_uploaded(FakePage(), resume_path) is True
+
+
+def test_my_experience_is_a_manual_advance_section() -> None:
+    assert "my experience" in MANUAL_ADVANCE_SECTIONS
+
+
+def test_current_section_label_recognises_workday_steps() -> None:
+    assert _current_section_label("Quick Apply please upload") == "quick apply"
+    assert _current_section_label("My Experience Work Experience") == "my experience"
+    assert (
+        _current_section_label("Application Questions Are you eligible")
+        == "application questions"
+    )
+    assert _current_section_label("Random unrelated text") is None
+
+
+def test_wait_for_user_to_advance_returns_true_when_section_changes() -> None:
+    sequence = [
+        "My Experience Job Title Company",
+        "My Experience Job Title Company",
+        "Application Questions Are you eligible",
+    ]
+    index = {"value": 0}
+
+    class FakePage:
+        def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+        def locator(self, selector: str):
+            text = sequence[min(index["value"], len(sequence) - 1)]
+            index["value"] += 1
+
+            class Body:
+                def inner_text(self, timeout: int) -> str:
+                    return text
+
+            return Body()
+
+    advanced = _wait_for_user_to_advance(
+        FakePage(), "my experience", timeout_ms=5_000, poll_ms=100
+    )
+    assert advanced is True
+
+
+def test_wait_for_user_to_advance_times_out_when_section_stays() -> None:
+    class FakePage:
+        def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+        def locator(self, selector: str):
+            class Body:
+                def inner_text(self, timeout: int) -> str:
+                    return "My Experience Work Experience Job Title"
+
+            return Body()
+
+    advanced = _wait_for_user_to_advance(
+        FakePage(), "my experience", timeout_ms=300, poll_ms=100
+    )
+    assert advanced is False
 
 
 def test_count_uploaded_resume_mentions_detects_duplicates(tmp_path: Path) -> None:

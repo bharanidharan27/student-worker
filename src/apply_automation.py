@@ -262,6 +262,61 @@ class SectionResult:
     message: str | None = None
 
 
+# Sections where the user must manually verify or complete fields before the
+# automation advances. The tool fills what it can, then waits for the user to
+# click Save and Continue / Next themselves.
+MANUAL_ADVANCE_SECTIONS = ("my experience",)
+
+# How long to wait for the user to manually advance past a manual section before
+# giving up (in milliseconds). Default: 15 minutes.
+MANUAL_ADVANCE_TIMEOUT_MS = 15 * 60 * 1_000
+MANUAL_ADVANCE_POLL_MS = 1_000
+
+
+def _current_section_label(body_text: str) -> str | None:
+    lowered = body_text.lower()
+    for label in (
+        "quick apply",
+        "my experience",
+        "application questions",
+        "voluntary disclosures",
+        "voluntary personal information",
+        "self identify",
+        "self-identification of disability",
+        "review",
+    ):
+        if label in lowered:
+            return label
+    return None
+
+
+def _wait_for_user_to_advance(
+    page,
+    current_section: str,
+    timeout_ms: int = MANUAL_ADVANCE_TIMEOUT_MS,
+    poll_ms: int = MANUAL_ADVANCE_POLL_MS,
+) -> bool:
+    """Poll until the active Workday section changes away from ``current_section``.
+
+    Returns True when the section advanced, False when the timeout elapsed.
+    """
+    elapsed = 0
+    while elapsed < timeout_ms:
+        try:
+            page.wait_for_timeout(poll_ms)
+        except Exception:
+            return False
+        elapsed += poll_ms
+        body_text = _safe_body_text(page).lower()
+        if current_section not in body_text:
+            return True
+        # If the user already moved to the review/signature step, treat that
+        # as advancing even if the sidebar still mentions the prior label.
+        if _looks_like_review_page(body_text):
+            return True
+    return False
+
+
 def _complete_application_flow(
     page,
     job: AutoApplyJob,
@@ -297,11 +352,43 @@ def _complete_application_flow(
                 return AutoApplyResult(job.id, True, True, False, "Application submitted by auto-apply.")
             return AutoApplyResult(job.id, False, False, True, "Submit button was not found on Review.")
 
-        if not _click_by_role(page, "button", r"\b(next|continue|review)\b", timeout_ms):
+        # On sections that the resume parser pre-fills (My Experience), Workday
+        # often still requires manual verification of dropdowns the parser
+        # cannot supply (Source, Country, Degree, etc.). Hand control back to
+        # the user, wait for them to click Save and Continue themselves, then
+        # resume auto-filling the remaining sections.
+        section_label = _current_section_label(body_text)
+        if section_label in MANUAL_ADVANCE_SECTIONS:
+            print(
+                f"[auto-apply] Paused on '{section_label}'. Please review the"
+                " pre-filled fields, fix any required dropdowns, and click"
+                " Save and Continue. The tool will resume automatically.",
+                flush=True,
+            )
+            advanced = _wait_for_user_to_advance(page, section_label)
+            if not advanced:
+                _write_debug_dump(page, debug_dump_dir, job.id, "manual_section_timeout")
+                return AutoApplyResult(
+                    job.id,
+                    False,
+                    False,
+                    True,
+                    f"Timed out waiting for the user to advance past the '{section_label}' section.",
+                )
+            # Give Workday a moment to render the next section before the next
+            # iteration tries to fill it.
+            page.wait_for_timeout(1_000)
+            continue
+
+        if not _click_by_role(page, "button", r"\b(next|continue|review|save and continue)\b", timeout_ms):
             return AutoApplyResult(job.id, False, False, True, "Next/Continue/Review button was not found.")
 
-        page.wait_for_timeout(1_000)
-        if _page_has_errors(page):
+        page.wait_for_timeout(1_500)
+        # Only treat error markers as a hard stop if Workday actually flagged
+        # invalid form fields. The substring 'error' alone produced false
+        # positives because Workday boilerplate ('an error has occurred' help
+        # text, etc.) appears on legitimate pages.
+        if _page_has_blocking_errors(page):
             return AutoApplyResult(job.id, False, False, True, "Workday shows required fields or validation errors.")
 
     return AutoApplyResult(job.id, False, False, True, "Reached the application step limit before Review.")
@@ -718,6 +805,38 @@ def _page_has_errors(page) -> bool:
             "error",
         ]
         return any(marker in body_text for marker in error_markers)
+    except Exception:
+        return False
+
+
+def _page_has_blocking_errors(page) -> bool:
+    """Tighter check for Workday validation errors.
+
+    Only flags the page as blocked when Workday actually marks form fields with
+    ``aria-invalid='true'`` or shows a validation banner. Plain occurrences of
+    the substring 'error' or generic 'required' wording are ignored to avoid
+    false positives on the My Experience and Voluntary Disclosures pages.
+    """
+    try:
+        invalid_count = page.locator("[aria-invalid='true']").count()
+        if invalid_count > 0:
+            return True
+        try:
+            banner_count = page.locator(
+                "[role='alert'], [data-automation-id='errorMessage'],"
+                " [data-automation-id='formErrors']"
+            ).count()
+            if banner_count > 0:
+                return True
+        except Exception:
+            pass
+        body_text = _safe_body_text(page).lower()
+        strict_markers = [
+            "please correct the errors",
+            "errors found",
+            "the following errors",
+        ]
+        return any(marker in body_text for marker in strict_markers)
     except Exception:
         return False
 

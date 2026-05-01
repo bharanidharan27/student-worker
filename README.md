@@ -156,6 +156,16 @@ python -m src.apply_cli --auto-apply 2 --headed
 
 Auto-apply fills the fixed Workday sections shown in the current ASU flow: work authorization, ASU enrollment, federal work study, age 18+, Hispanic/Latino disclosure, disability self-identification, and the review signature checkbox. It uses the recommended resume PDF for upload and the resume parser for experience fields.
 
+### Manual handoff on My Experience
+
+Workday's `My Experience` page contains required dropdowns the resume parser cannot supply (for example `Source`, education `Country`, `Degree`, and `Field of Study`). Auto-apply uploads the resume on Quick Apply, lets Workday parse it into `My Experience`, and then **pauses** so you can:
+
+1. Verify pre-filled work experience, education, and skills.
+2. Pick the missing dropdowns Workday flags as required.
+3. Click `Save and Continue` yourself.
+
+The terminal prints a `[auto-apply] Paused on 'my experience'` message while it waits. As soon as Workday navigates past `My Experience`, the tool resumes and auto-fills `Application Questions`, `Voluntary Disclosures`, `Self Identify`, and the `Review` signature checkbox. With `--submit`, it then clicks the final `Submit`. The pause times out after 15 minutes and marks the job as `reviewing`.
+
 Allow final submit only when Workday does not show required-field blockers:
 
 ```bash
