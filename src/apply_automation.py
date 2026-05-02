@@ -292,26 +292,95 @@ _SECTION_LABELS: tuple[str, ...] = (
 def _current_section_label(body_text_or_page) -> str | None:
     """Return the current Workday section.
 
-    Workday's left sidebar lists every section label on every page, so a
-    plain body-text scan can't tell us where we actually are. When given a
-    Playwright page, prefer the page's main heading (an ``<h2>`` rendered
-    inside the form, never inside the sidebar). When given a string
-    (legacy/test path), fall back to a substring match.
+    Detection order (first reliable signal wins):
+
+    1. Feature detection on the live page — e.g. an empty file input
+       means Quick Apply, a 'Hispanic or Latino' radio means Voluntary
+       Disclosures, a signature checkbox means Review. This works
+       regardless of how Workday labels the page.
+    2. The visible heading text (when one matches a known section).
+    3. Body-text substring match, but only when exactly one known
+       label is present (otherwise the progress bar would mislead us).
+
+    Test/legacy callers pass a string and only get path 3.
     """
     if isinstance(body_text_or_page, str):
         return _section_from_text(body_text_or_page)
 
     page = body_text_or_page
+
+    # 1. Feature detection — most reliable, doesn't depend on labels.
+    feature_label = _detect_section_by_features(page)
+    if feature_label is not None:
+        return feature_label
+
+    # 2. Heading text.
     heading = _read_active_section_heading(page)
     if heading is not None:
         match = _section_from_text(heading)
         if match is not None:
             return match
-    # Fallback to scanning the body text if no heading is visible.
+
+    # 3. Body-text fallback.
     try:
         return _section_from_text(_safe_body_text(page))
     except Exception:
         return None
+
+
+def _detect_section_by_features(page) -> str | None:
+    """Detect the current Workday step by what's actually on the page.
+
+    Each step has unique structural fingerprints we can recognise without
+    depending on labels (which Workday tenants and themes vary):
+
+    * Quick Apply: a file input is present and no resume is attached yet.
+    * Review: a signature / 'I acknowledge' checkbox or 'Submit' button.
+    * Self Identify: a CC-305 disclosure block (Workday OFCCP form).
+    * Voluntary Disclosures: 'Hispanic or Latino' question on the page.
+    * My Experience: 'Work Experience' + 'Education' headings/sections.
+    * Application Questions: 'Are you eligible to work' or 'work-study'.
+    """
+    # Quick Apply: file input present.
+    try:
+        if page.locator("input[type='file']").count() > 0:
+            # Even on a page that lists 'My Experience' content, Workday's
+            # actual file input only renders on the Quick Apply step in
+            # this flow. The body-text fallback then disambiguates.
+            try:
+                body_lower = _safe_body_text(page).lower()
+            except Exception:
+                body_lower = ""
+            if (
+                "work experience" not in body_lower
+                and "education" not in body_lower
+            ):
+                return "quick apply"
+    except Exception:
+        pass
+
+    # Body-text driven feature checks for later steps. Multi-label sidebar
+    # text doesn't bother us here because we're keying on *content*.
+    try:
+        body_lower = _safe_body_text(page).lower()
+    except Exception:
+        return None
+
+    if "i acknowledge" in body_lower or "electronic signature" in body_lower:
+        return "review"
+    if "cc-305" in body_lower or "section 503" in body_lower:
+        return "self-identification of disability"
+    if "hispanic or latino" in body_lower:
+        return "voluntary disclosures"
+    if "work experience" in body_lower and "education" in body_lower:
+        return "my experience"
+    if (
+        "eligible to work in the united states" in body_lower
+        or "federal work-study" in body_lower
+        or "federal work study" in body_lower
+    ):
+        return "application questions"
+    return None
 
 
 def _section_from_text(text: str) -> str | None:
@@ -425,12 +494,44 @@ def _complete_application_flow(
 ) -> AutoApplyResult:
     last_section_label: str | None = None
     repeated_section_count = 0
+    unknown_section_streak = 0
     for step_index in range(max_steps):
         section_label = _current_section_label(page)
         print(
             f"[auto-apply] Step {step_index + 1}: section = {section_label!r}.",
             flush=True,
         )
+
+        # Don't blindly click Next when we don't even know what page we're on.
+        # Two unknown steps in a row means our detectors aren't matching
+        # anything we recognise — dump debug state and ask the user to take
+        # over instead of clicking through unknown screens.
+        if section_label is None:
+            unknown_section_streak += 1
+            if unknown_section_streak >= 2:
+                _write_debug_dump(page, debug_dump_dir, job.id, "section_unknown")
+                print(
+                    "[auto-apply] Section is unrecognised on two consecutive"
+                    " steps. Pausing so you can complete the application"
+                    " manually. (A debug dump was saved.)",
+                    flush=True,
+                )
+                advanced = _wait_for_user_to_advance(page, "unknown")
+                if not advanced:
+                    return AutoApplyResult(
+                        job.id,
+                        False,
+                        False,
+                        True,
+                        "Could not identify the current Workday section."
+                        " Stopped to avoid clicking Next on unknown screens.",
+                    )
+                last_section_label = None
+                repeated_section_count = 0
+                unknown_section_streak = 0
+                continue
+        else:
+            unknown_section_streak = 0
 
         # Detect 'Next was clicked but Workday silently kept us on the
         # same section' (e.g. My Experience with an empty required

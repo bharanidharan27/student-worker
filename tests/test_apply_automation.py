@@ -202,6 +202,18 @@ def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
         def locator(self, selector: str):
             outer = self
 
+            class _Empty:
+                first = property(lambda self: self)
+
+                def count(self_inner) -> int:
+                    return 0
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    return ""
+
+                def nth(self_inner, _index: int):
+                    return self_inner
+
             class _H2:
                 first = property(lambda self: self)
 
@@ -222,6 +234,8 @@ def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
 
             if selector == "body":
                 return _Body()
+            if selector == "input[type='file']":
+                return _Empty()
             return _H2()
 
     page = HeadingPage(
@@ -233,6 +247,57 @@ def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
     )
     assert _current_section_label(page) == "my experience"
     assert _current_section_label("Random unrelated text") is None
+
+
+def test_current_section_label_detects_quick_apply_without_heading() -> None:
+    """Direct-URL ASU flow has no left sidebar and may not expose a clean h1/h2.
+
+    Feature detection (a file input on the page, no parsed Work
+    Experience / Education yet) must still identify Quick Apply.
+    """
+
+    class FileInputPage:
+        def __init__(self, has_file_input: bool, body: str):
+            self._has_file_input = has_file_input
+            self._body = body
+
+        def locator(self, selector: str):
+            outer = self
+
+            class _Match:
+                def __init__(self, count_value: int, text: str = ""):
+                    self._count = count_value
+                    self._text = text
+
+                first = property(lambda self: self)
+
+                def count(self_inner) -> int:
+                    return self_inner._count
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    return self_inner._text
+
+                def nth(self_inner, _index: int):
+                    return self_inner
+
+            if selector == "input[type='file']":
+                return _Match(1 if outer._has_file_input else 0)
+            if selector == "body":
+                return _Match(1, outer._body)
+            return _Match(0)
+
+    page = FileInputPage(
+        has_file_input=True,
+        body="Quick Apply Please Read Drop file here Select files",
+    )
+    assert _current_section_label(page) == "quick apply"
+
+    # Same input without the file input: no detection — caller should pause.
+    page2 = FileInputPage(
+        has_file_input=False,
+        body="Some text without any known section names",
+    )
+    assert _current_section_label(page2) is None
 
 
 def test_wait_for_user_to_advance_returns_true_when_section_changes() -> None:
