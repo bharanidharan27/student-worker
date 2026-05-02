@@ -211,6 +211,9 @@ def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
                 def inner_text(self_inner, timeout: int) -> str:
                     return outer._heading
 
+                def nth(self_inner, _index: int):
+                    return self_inner
+
             class _Body:
                 first = property(lambda self: self)
 
@@ -362,7 +365,16 @@ class _ResumeUploadFakePage:
                     return 1
 
             return _Present()
-        if selector in ("main h2", "[role='main'] h2", "h2[data-automation-id]", "h2"):
+        if selector in (
+            "main h1",
+            "main h2",
+            "[role='main'] h1",
+            "[role='main'] h2",
+            "h1[data-automation-id]",
+            "h2[data-automation-id]",
+            "h1",
+            "h2",
+        ):
             outer = self
 
             class _H2:
@@ -373,6 +385,9 @@ class _ResumeUploadFakePage:
 
                 def inner_text(self_inner, timeout: int) -> str:
                     return outer._heading or ""
+
+                def nth(self_inner, _index: int):
+                    return self_inner
 
             return _H2()
         if selector == "input[type='file']":

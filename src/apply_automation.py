@@ -315,37 +315,70 @@ def _current_section_label(body_text_or_page) -> str | None:
 
 
 def _section_from_text(text: str) -> str | None:
+    """Best-effort section detection from a flat text blob.
+
+    Used only when the heading lookup returns nothing. If the text
+    contains multiple Workday section labels we can't tell which one
+    is current (this happens with the progress bar pill or any sidebar
+    fragment), so we return None and let the caller decide.
+    """
     lowered = text.lower()
-    for label in _SECTION_LABELS:
-        if label in lowered:
-            return label
+    matches = [label for label in _SECTION_LABELS if label in lowered]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
 def _read_active_section_heading(page) -> str | None:
-    """Return the visible page heading text, ignoring the sidebar.
+    """Return the visible page heading text, ignoring nav and progress legends.
 
-    Workday renders the active section title in an ``<h2>`` inside the
-    main form panel. The sidebar uses ``<a>`` and progress nodes — not
-    headings — so an ``h2`` query is sidebar-immune.
+    Workday's ASU tenant renders the active section title centered above
+    a progress bar pill. The pill's label list (e.g. 'Quick Apply'
+    + 'My Experience' next-step pill) can also live inside heading-ish
+    elements, so we accept a heading only when it contains *exactly one*
+    known section label. Multiple labels in one element means we hit the
+    progress legend or sidebar, not the actual page title.
     """
+    candidates: list[str] = []
     try:
         for selector in (
+            "main h1",
             "main h2",
+            "[role='main'] h1",
             "[role='main'] h2",
+            "h1[data-automation-id]",
             "h2[data-automation-id]",
+            "h1",
             "h2",
         ):
             try:
-                loc = page.locator(selector).first
-                if loc.count() > 0:
-                    text = (loc.inner_text(timeout=500) or "").strip()
-                    if text:
-                        return text
+                loc = page.locator(selector)
+                count = min(loc.count(), 6)
             except Exception:
                 continue
+            for index in range(count):
+                try:
+                    text = (loc.nth(index).inner_text(timeout=500) or "").strip()
+                except Exception:
+                    continue
+                if text:
+                    candidates.append(text)
     except Exception:
         return None
+
+    # Prefer a heading that names exactly one Workday section. That filters
+    # out the progress-bar legend which lists multiple section names at once.
+    for text in candidates:
+        labels_in_text = [lbl for lbl in _SECTION_LABELS if lbl in text.lower()]
+        if len(labels_in_text) == 1:
+            return text
+
+    # Fallback: return the first non-empty heading even if it doesn't match
+    # a known label — some pages (e.g. the 'My Information' step) have a
+    # heading that doesn't appear in our enum but is still informative.
+    for text in candidates:
+        if text:
+            return text
     return None
 
 
