@@ -332,14 +332,15 @@ def scrape_workday_jobs(
                     print(f"Reached scrape limit of {limit}.", flush=True)
                     break
 
-                if jobs_seen == previous_seen_count:
+                # Only treat scans with visible cards but no new saved jobs as "idle".
+                if visible_count > 0 and jobs_seen == previous_seen_count:
                     scrolls_without_new_jobs += 1
                     print(
                         f"No new jobs found on this scan "
                         f"({scrolls_without_new_jobs}/{idle_rounds} idle scans).",
                         flush=True,
                     )
-                else:
+                elif jobs_seen > previous_seen_count:
                     scrolls_without_new_jobs = 0
                     previous_seen_count = jobs_seen
 
