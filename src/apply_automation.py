@@ -12,6 +12,10 @@ from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH
 from src.auth.session_check import auth_state_exists, evaluate_session_page
 from src.storage.db import DEFAULT_DB_PATH, get_job_by_id, list_apply_queue, update_job_status
 
+# How long to wait for the Workday virus-scan / upload to complete (ms).
+# Workday's async scanner can take 20-30 s on slow connections.
+RESUME_UPLOAD_TIMEOUT_MS = 45_000
+
 
 @dataclass(frozen=True)
 class AutoApplyJob:
@@ -266,10 +270,11 @@ class SectionResult:
 # automation advances. The tool fills what it can, then waits for the user to
 # click Save and Continue / Next themselves.
 #
-# My Experience is intentionally NOT in this list. Workday's resume parser
-# pre-fills the section from the Quick Apply upload, and per the user's
-# instruction the tool must do nothing on this page except click Next.
-MANUAL_ADVANCE_SECTIONS: tuple[str, ...] = ()
+# "my experience" is included here because Workday's resume parser pre-fills
+# Work Experience and Education from the Quick Apply upload, but required
+# dropdowns (To date, Currently work here, Country, Degree, Field of Study)
+# are often left empty and must be fixed by the user before clicking Next.
+MANUAL_ADVANCE_SECTIONS: tuple[str, ...] = ("my experience",)
 
 # How long to wait for the user to manually advance past a manual section before
 # giving up (in milliseconds). Default: 15 minutes.
@@ -329,24 +334,9 @@ def _current_section_label(body_text_or_page) -> str | None:
 
 
 def _detect_section_by_features(page) -> str | None:
-    """Detect the current Workday step by what's actually on the page.
-
-    Each step has unique structural fingerprints we can recognise without
-    depending on labels (which Workday tenants and themes vary):
-
-    * Quick Apply: a file input is present and no resume is attached yet.
-    * Review: a signature / 'I acknowledge' checkbox or 'Submit' button.
-    * Self Identify: a CC-305 disclosure block (Workday OFCCP form).
-    * Voluntary Disclosures: 'Hispanic or Latino' question on the page.
-    * My Experience: 'Work Experience' + 'Education' headings/sections.
-    * Application Questions: 'Are you eligible to work' or 'work-study'.
-    """
-    # Quick Apply: file input present.
+    """Detect the current Workday step by what's actually on the page."""
     try:
         if page.locator("input[type='file']").count() > 0:
-            # Even on a page that lists 'My Experience' content, Workday's
-            # actual file input only renders on the Quick Apply step in
-            # this flow. The body-text fallback then disambiguates.
             try:
                 body_lower = _safe_body_text(page).lower()
             except Exception:
@@ -359,8 +349,6 @@ def _detect_section_by_features(page) -> str | None:
     except Exception:
         pass
 
-    # Body-text driven feature checks for later steps. Multi-label sidebar
-    # text doesn't bother us here because we're keying on *content*.
     try:
         body_lower = _safe_body_text(page).lower()
     except Exception:
@@ -384,13 +372,6 @@ def _detect_section_by_features(page) -> str | None:
 
 
 def _section_from_text(text: str) -> str | None:
-    """Best-effort section detection from a flat text blob.
-
-    Used only when the heading lookup returns nothing. If the text
-    contains multiple Workday section labels we can't tell which one
-    is current (this happens with the progress bar pill or any sidebar
-    fragment), so we return None and let the caller decide.
-    """
     lowered = text.lower()
     matches = [label for label in _SECTION_LABELS if label in lowered]
     if len(matches) == 1:
@@ -399,15 +380,6 @@ def _section_from_text(text: str) -> str | None:
 
 
 def _read_active_section_heading(page) -> str | None:
-    """Return the visible page heading text, ignoring nav and progress legends.
-
-    Workday's ASU tenant renders the active section title centered above
-    a progress bar pill. The pill's label list (e.g. 'Quick Apply'
-    + 'My Experience' next-step pill) can also live inside heading-ish
-    elements, so we accept a heading only when it contains *exactly one*
-    known section label. Multiple labels in one element means we hit the
-    progress legend or sidebar, not the actual page title.
-    """
     candidates: list[str] = []
     try:
         for selector in (
@@ -435,16 +407,11 @@ def _read_active_section_heading(page) -> str | None:
     except Exception:
         return None
 
-    # Prefer a heading that names exactly one Workday section. That filters
-    # out the progress-bar legend which lists multiple section names at once.
     for text in candidates:
         labels_in_text = [lbl for lbl in _SECTION_LABELS if lbl in text.lower()]
         if len(labels_in_text) == 1:
             return text
 
-    # Fallback: return the first non-empty heading even if it doesn't match
-    # a known label — some pages (e.g. the 'My Information' step) have a
-    # heading that doesn't appear in our enum but is still informative.
     for text in candidates:
         if text:
             return text
@@ -457,12 +424,6 @@ def _wait_for_user_to_advance(
     timeout_ms: int = MANUAL_ADVANCE_TIMEOUT_MS,
     poll_ms: int = MANUAL_ADVANCE_POLL_MS,
 ) -> bool:
-    """Poll until the active Workday section changes away from ``current_section``.
-
-    Uses the page heading (not body text) to detect the change so the
-    sidebar that lists every label on every page can't fool us.
-    Returns True when the section advanced, False when the timeout elapsed.
-    """
     elapsed = 0
     while elapsed < timeout_ms:
         try:
@@ -473,8 +434,6 @@ def _wait_for_user_to_advance(
         active = _current_section_label(page)
         if active is not None and active != current_section:
             return True
-        # If the user reached the review/signature step, treat that as
-        # advancing even if the heading hasn't been read yet.
         try:
             if _looks_like_review_page(_safe_body_text(page)):
                 return True
@@ -502,10 +461,6 @@ def _complete_application_flow(
             flush=True,
         )
 
-        # Don't blindly click Next when we don't even know what page we're on.
-        # Two unknown steps in a row means our detectors aren't matching
-        # anything we recognise — dump debug state and ask the user to take
-        # over instead of clicking through unknown screens.
         if section_label is None:
             unknown_section_streak += 1
             if unknown_section_streak >= 2:
@@ -533,17 +488,14 @@ def _complete_application_flow(
         else:
             unknown_section_streak = 0
 
-        # Detect 'Next was clicked but Workday silently kept us on the
-        # same section' (e.g. My Experience with an empty required
-        # Source dropdown). Hand control to the user instead of looping.
         if section_label is not None and section_label == last_section_label:
             repeated_section_count += 1
             if repeated_section_count >= 1:
                 print(
                     f"[auto-apply] Paused on '{section_label}': Workday did not"
                     " advance after clicking Next. Please fill the remaining"
-                    " required fields (Source, Country, Degree, etc.) and click"
-                    " Save and Continue. The tool will resume automatically.",
+                    " required fields and click Save and Continue."
+                    " The tool will resume automatically.",
                     flush=True,
                 )
                 advanced = _wait_for_user_to_advance(page, section_label)
@@ -571,7 +523,23 @@ def _complete_application_flow(
         body_text = _safe_body_text(page)
         if _looks_like_review_page(body_text):
             if not _check_review_signature(page, timeout_ms):
-                return AutoApplyResult(job.id, False, False, True, "Review signature checkbox was not found.")
+                print(
+                    "[auto-apply] Paused on 'review': could not find the signature"
+                    " checkbox automatically. Please tick 'I agree' / 'legal"
+                    " equivalent of a signature' and click Submit."
+                    " The tool will resume automatically.",
+                    flush=True,
+                )
+                advanced = _wait_for_user_to_advance(page, "review")
+                if not advanced:
+                    return AutoApplyResult(job.id, False, False, True, "Review signature checkbox was not found.")
+                return AutoApplyResult(
+                    job.id,
+                    True,
+                    True,
+                    False,
+                    "Application submitted by user after auto-apply paused on Review.",
+                )
             if not submit:
                 _write_debug_dump(page, debug_dump_dir, job.id, "filled_review_not_submitted")
                 return AutoApplyResult(
@@ -588,16 +556,18 @@ def _complete_application_flow(
                 return AutoApplyResult(job.id, True, True, False, "Application submitted by auto-apply.")
             return AutoApplyResult(job.id, False, False, True, "Submit button was not found on Review.")
 
-        # On sections that the resume parser pre-fills (My Experience), Workday
-        # often still requires manual verification of dropdowns the parser
-        # cannot supply (Source, Country, Degree, etc.). Hand control back to
-        # the user, wait for them to click Save and Continue themselves, then
-        # resume auto-filling the remaining sections.
+        # For sections in MANUAL_ADVANCE_SECTIONS (currently "my experience"),
+        # pause immediately and wait for the user to review pre-filled fields,
+        # fix required dropdowns (To date, Degree, Field of Study, etc.) and
+        # click Save and Continue themselves.
         if section_label in MANUAL_ADVANCE_SECTIONS:
             print(
-                f"[auto-apply] Paused on '{section_label}'. Please review the"
-                " pre-filled fields, fix any required dropdowns, and click"
-                " Save and Continue. The tool will resume automatically.",
+                f"[auto-apply] Paused on '{section_label}'. The resume parser"
+                " pre-filled your Work Experience and Education, but some"
+                " required fields (To date, Currently work here, Country,"
+                " Degree, Field of Study, etc.) may still be empty."
+                " Please fill them and click Save and Continue."
+                " The tool will resume automatically.",
                 flush=True,
             )
             advanced = _wait_for_user_to_advance(page, section_label)
@@ -610,8 +580,6 @@ def _complete_application_flow(
                     True,
                     f"Timed out waiting for the user to advance past the '{section_label}' section.",
                 )
-            # Give Workday a moment to render the next section before the next
-            # iteration tries to fill it.
             page.wait_for_timeout(1_000)
             continue
 
@@ -623,10 +591,6 @@ def _complete_application_flow(
         )
 
         page.wait_for_timeout(1_500)
-        # Only treat error markers as a hard stop if Workday actually flagged
-        # invalid form fields. The substring 'error' alone produced false
-        # positives because Workday boilerplate ('an error has occurred' help
-        # text, etc.) appears on legitimate pages.
         if _page_has_blocking_errors(page):
             return AutoApplyResult(job.id, False, False, True, "Workday shows required fields or validation errors.")
 
@@ -639,34 +603,27 @@ def _fill_known_section(
     profile: ApplicationProfile,
     timeout_ms: int,
 ) -> SectionResult:
-    # Use the heading-based label as the primary dispatch — Workday's
-    # left sidebar lists every step on every page, so a body-text scan
-    # cannot tell us which page we're really on.
     section_label = _current_section_label(page)
     body_text = _safe_body_text(page).lower()
 
-    # Test/legacy callers that pass a fake page may not have a heading;
-    # fall back to substring matching when the heading lookup yields None.
     if section_label is None:
         section_label = _section_from_text(body_text)
 
     if section_label == "my experience":
-        # Workday's resume parser pre-fills Work Experience, Education, and
-        # the Resume/CV subsection from the Quick Apply upload. Do NOT
-        # touch the upload again here.
+        # Workday's resume parser pre-fills Work Experience and Education from
+        # the Quick Apply upload. MANUAL_ADVANCE_SECTIONS handles the pause.
         return SectionResult(True)
 
     if section_label == "quick apply":
         if not _upload_resume(page, job.resume_path, timeout_ms):
             return SectionResult(False, "Resume upload field was not found on Quick Apply.")
-        # Hard verification: don't advance past Quick Apply unless the
-        # resume actually attached. Workday surfaces an attachment chip
-        # (delete-file / file-uploaded) once the upload completed.
-        if not _wait_for_resume_attached(page, job.resume_path, timeout_ms):
+        # Use RESUME_UPLOAD_TIMEOUT_MS (45 s) — not timeout_ms (10 s) — so the
+        # Workday async virus-scan has enough time to finish before we advance.
+        if not _wait_for_resume_attached(page, job.resume_path, RESUME_UPLOAD_TIMEOUT_MS):
             return SectionResult(
                 False,
-                "Resume upload did not complete on Quick Apply (no attachment"
-                " indicator appeared). Stopped before advancing.",
+                "Resume upload did not complete on Quick Apply (no 'Successfully Uploaded'"
+                " indicator appeared within 45 s). Stopped before advancing.",
             )
         print(
             f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
@@ -810,12 +767,6 @@ def _ancestor_contains_text(locator, text: str) -> bool:
 
 
 def _looks_like_later_step(body_text: str) -> bool:
-    """True when the page is past the Quick Apply step.
-
-    The Quick Apply heading text appears in Workday's left-side navigation
-    sidebar on every later step. We use the *content* headings unique to
-    later steps to disambiguate.
-    """
     later_markers = (
         "my experience",
         "application questions",
@@ -829,18 +780,6 @@ def _looks_like_later_step(body_text: str) -> bool:
 
 
 def _upload_resume(page, resume_path: Path, timeout_ms: int) -> bool:
-    # Caller (_fill_known_section) already guarantees this is the Quick
-    # Apply step and not a later step, so we never need to worry about
-    # auto-filled Work Experience / Education cards on My Experience.
-    #
-    # Only skip the upload when the resume is *actually attached* to this
-    # Quick Apply step. The signal for that is an explicit attachment
-    # indicator on the page — a Remove/Delete control or Workday's
-    # ``file-uploaded`` widget — paired with the file name. The plain
-    # body-text mention is unreliable because Workday's Quick Apply step
-    # also lists previously-saved resumes in a "Recent" / "Use a previous
-    # resume" section, which would otherwise short-circuit the upload
-    # before it ever happens.
     if _resume_already_attached(page, resume_path):
         return True
 
@@ -868,17 +807,24 @@ def _wait_for_resume_attached(
     timeout_ms: int,
     poll_ms: int = 500,
 ) -> bool:
-    """Block until Workday shows an attachment indicator, or time out.
+    """Block until Workday shows 'Successfully Uploaded!' or a delete chip.
 
-    Used right after _upload_resume to verify the upload finished. Workday
-    posts the file asynchronously, so we poll for the attachment chip
-    instead of trusting the input.set_input_files call alone.
+    Workday posts the file asynchronously and runs a virus scan before
+    showing the success indicator. Use RESUME_UPLOAD_TIMEOUT_MS (45 s)
+    as the deadline — not the generic timeout_ms — so slow virus-scan
+    passes don't cause a false 'upload failed' result.
     """
     elapsed = 0
-    deadline = max(timeout_ms, 5_000)
-    while elapsed < deadline:
+    while elapsed < timeout_ms:
         if _resume_already_attached(page, resume_path):
             return True
+        # Also check for the "Successfully Uploaded!" text as an extra signal.
+        try:
+            body_lower = _safe_body_text(page).lower()
+            if "successfully uploaded" in body_lower:
+                return True
+        except Exception:
+            pass
         try:
             page.wait_for_timeout(poll_ms)
         except Exception:
@@ -888,17 +834,6 @@ def _wait_for_resume_attached(
 
 
 def _resume_already_attached(page, resume_path: Path) -> bool:
-    """Return True only when the resume is *attached* to this step.
-
-    Workday signals a successfully attached file with one of:
-      * an attachment chip with data-automation-id 'file-uploaded',
-      * a Delete button with data-automation-id 'delete-file',
-      * a hidden <input type='file'> whose .files list is non-empty.
-
-    A plain text mention of the file name in the page body is **not**
-    sufficient — Workday's Quick Apply step lists previously-saved
-    resumes in a 'Recent files' section even when nothing is attached.
-    """
     try:
         for selector in (
             "[data-automation-id='file-uploaded']",
@@ -913,8 +848,6 @@ def _resume_already_attached(page, resume_path: Path) -> bool:
     except Exception:
         pass
 
-    # Fallback: ask the file input itself whether it has files attached.
-    # Playwright doesn't expose .files directly, so we use evaluate.
     try:
         has_file = page.evaluate(
             "() => {\n"
