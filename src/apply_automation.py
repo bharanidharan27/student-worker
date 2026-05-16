@@ -45,6 +45,10 @@ class ApplicationProfile:
     federal_work_study: str = "No"
     age_18_or_older: str = "Yes"
     hispanic_or_latino: str = "No"
+    # Voluntary Disclosures — set per user's self-identification
+    ethnicity: str = "Asian (United States of America)"
+    gender: str = "Male"
+    veteran_status: str = "Not a Veteran"
     disability_status: str = "No, I do not have a disability and have not had one in the past"
     disability_language: str = "English"
 
@@ -620,15 +624,20 @@ def _fill_known_section(
         # Use RESUME_UPLOAD_TIMEOUT_MS (45 s) — not timeout_ms (10 s) — so the
         # Workday async virus-scan has enough time to finish before we advance.
         if not _wait_for_resume_attached(page, job.resume_path, RESUME_UPLOAD_TIMEOUT_MS):
-            return SectionResult(
-                False,
-                "Resume upload did not complete on Quick Apply (no 'Successfully Uploaded'"
-                " indicator appeared within 45 s). Stopped before advancing.",
+            # Don't hard-fail — ASU Workday's attachment chip selector may not
+            # match any known data-automation-id. Log a warning and proceed;
+            # if Next fails, the stuck-section handler will pause for the user.
+            print(
+                "[auto-apply] Warning: could not confirm upload via attachment"
+                " chip within 45 s. Proceeding anyway — check the browser"
+                " window to verify the resume was accepted.",
+                flush=True,
             )
-        print(
-            f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
-            flush=True,
-        )
+        else:
+            print(
+                f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
+                flush=True,
+            )
         return SectionResult(True)
 
     if section_label == "application questions" or "application questions" in body_text:
@@ -659,7 +668,14 @@ def _fill_known_section(
         return SectionResult(True)
 
     if section_label in {"voluntary personal information", "voluntary disclosures"} or "hispanic or latino" in body_text:
+        # 1. Hispanic or Latino (radio: Yes / No)
         _answer_radio_by_question(page, r"hispanic or latino", profile.hispanic_or_latino, timeout_ms)
+        # 2. Ethnicity (checkboxes — tick the matching label)
+        _check_ethnicity_checkbox(page, profile.ethnicity, timeout_ms)
+        # 3. Gender (dropdown)
+        _answer_dropdown_by_question(page, r"select your gender", profile.gender, timeout_ms)
+        # 4. Veteran status (dropdown)
+        _answer_dropdown_by_question(page, r"veteran status", profile.veteran_status, timeout_ms)
         return SectionResult(True)
 
     if section_label in {"self identify", "self-identification of disability"} or "cc-305" in body_text:
@@ -838,7 +854,11 @@ def _resume_already_attached(page, resume_path: Path) -> bool:
         for selector in (
             "[data-automation-id='file-uploaded']",
             "[data-automation-id='delete-file']",
+            "[data-automation-id='removeFile']",
             "[data-automation-id='attachments-list'] [data-automation-id='file-uploaded']",
+            "[data-automation-id='fileAttachmentContainer']",
+            "button[aria-label*='Delete']",
+            "button[aria-label*='Remove']",
         ):
             try:
                 if page.locator(selector).count() > 0:
@@ -976,6 +996,26 @@ def _answer_radio_by_question(page, question_pattern: str, answer: str, timeout_
         except Exception:
             continue
     return False
+
+
+def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bool:
+    """Tick one ethnicity checkbox by its visible label text."""
+    if not ethnicity_label:
+        return False
+    try:
+        label_loc = page.get_by_text(re.compile(re.escape(ethnicity_label), re.IGNORECASE)).first
+        checkbox = label_loc.locator(
+            "xpath=ancestor::*[.//input[@type='checkbox'] or .//*[@role='checkbox']][1]"
+        ).locator("input[type='checkbox'], [role='checkbox']").first
+        checkbox.click(timeout=timeout_ms)
+        return True
+    except Exception:
+        pass
+    try:
+        page.get_by_label(re.compile(re.escape(ethnicity_label), re.IGNORECASE)).first.check(timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
 
 
 def _fill_disability_section(page, profile: ApplicationProfile, timeout_ms: int) -> None:
