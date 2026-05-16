@@ -45,8 +45,11 @@ class ApplicationProfile:
     federal_work_study: str = "No"
     age_18_or_older: str = "Yes"
     hispanic_or_latino: str = "No"
-    # Voluntary Disclosures — set per user's self-identification
-    ethnicity: str = "Asian (United States of America)"
+    # Voluntary Disclosures — set per user's self-identification.
+    # NOTE: The label in Workday's HTML is "Asian United States of America"
+    # (no parentheses).  We normalise both sides in _check_ethnicity_checkbox
+    # so either spelling works.
+    ethnicity: str = "Asian United States of America"
     gender: str = "Male"
     veteran_status: str = "Not a Veteran"
     disability_status: str = "No, I do not have a disability and have not had one in the past"
@@ -670,12 +673,21 @@ def _fill_known_section(
     if section_label in {"voluntary personal information", "voluntary disclosures"} or "hispanic or latino" in body_text:
         # 1. Hispanic or Latino (radio: Yes / No)
         _answer_radio_by_question(page, r"hispanic or latino", profile.hispanic_or_latino, timeout_ms)
-        # 2. Ethnicity (checkboxes — tick the matching label)
+        # 2. Ethnicity (checkboxes — tick the matching label).
+        #    Workday's label is "Asian United States of America" (no parentheses).
+        #    _check_ethnicity_checkbox normalises both sides so either spelling matches.
         _check_ethnicity_checkbox(page, profile.ethnicity, timeout_ms)
         # 3. Gender (dropdown)
         _answer_dropdown_by_question(page, r"select your gender", profile.gender, timeout_ms)
         # 4. Veteran status (dropdown)
         _answer_dropdown_by_question(page, r"veteran status", profile.veteran_status, timeout_ms)
+        # 5. Terms & Conditions agreement checkbox — lives on the SAME page as the
+        #    voluntary fields on ASU Workday (fieldset "Terms and Conditions").
+        #    data-automation-id = checkBoxInput.agreementCheckbox
+        #    label = "I understand that checking this box is the legal equivalent
+        #             of a signature accepting the terms above"
+        #    This is required (aria-required=true). Tick it now so Next is not blocked.
+        _tick_agreement_checkbox(page, timeout_ms)
         return SectionResult(True)
 
     if section_label in {"self identify", "self-identification of disability"} or "cc-305" in body_text:
@@ -687,6 +699,64 @@ def _fill_known_section(
         return SectionResult(True)
 
     return SectionResult(True)
+
+
+def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
+    """Tick the Terms & Conditions agreement checkbox on the Voluntary Disclosures page.
+
+    Workday uses data-automation-id='checkBoxInput.agreementCheckbox' for this
+    element.  The visible label text is:
+      "I understand that checking this box is the legal equivalent of a
+       signature accepting the terms above"
+
+    We try three selectors in order of specificity so we always find it even if
+    Workday changes the generated element IDs.
+    """
+    # 1. Direct data-automation-id selector (most reliable)
+    try:
+        cb = page.locator("[data-automation-id='checkBoxInput.agreementCheckbox'] input[type='checkbox']").first
+        if cb.count() > 0:
+            if not cb.is_checked():
+                cb.click(timeout=timeout_ms)
+                print("[auto-apply] Ticked Terms & Conditions agreement checkbox.", flush=True)
+            else:
+                print("[auto-apply] Terms & Conditions agreement checkbox already checked.", flush=True)
+            return True
+    except Exception:
+        pass
+
+    # 2. By visible label text
+    try:
+        cb = page.get_by_label(
+            re.compile(r"legal equivalent of a signature", re.IGNORECASE)
+        ).first
+        if not cb.is_checked():
+            cb.click(timeout=timeout_ms)
+            print("[auto-apply] Ticked Terms & Conditions agreement checkbox (via label).", flush=True)
+        return True
+    except Exception:
+        pass
+
+    # 3. By the containing div's data-automation-id (fallback)
+    try:
+        cb = page.locator(
+            "div[data-automation-id='checkBoxInput.agreementCheckbox'] input[type='checkbox'],"
+            " #checkBoxInput\\.agreementCheckbox-da0584e2e942c86d-input"
+        ).first
+        if cb.count() > 0:
+            if not cb.is_checked():
+                cb.click(timeout=timeout_ms)
+                print("[auto-apply] Ticked Terms & Conditions agreement checkbox (fallback selector).", flush=True)
+            return True
+    except Exception:
+        pass
+
+    print(
+        "[auto-apply] Warning: could not find Terms & Conditions agreement checkbox."
+        " If Next is blocked, please tick it manually.",
+        flush=True,
+    )
+    return False
 
 
 def _click_apply(page, timeout_ms: int) -> bool:
@@ -998,12 +1068,60 @@ def _answer_radio_by_question(page, question_pattern: str, answer: str, timeout_
     return False
 
 
+def _normalise_ethnicity(label: str) -> str:
+    """Strip parentheses and normalise whitespace for ethnicity label comparison.
+
+    Workday's HTML uses "Asian United States of America" (no parentheses) while
+    profile values may use "Asian (United States of America)".  Normalising both
+    sides makes matching robust to either spelling.
+    """
+    return re.sub(r"[()]", "", label).strip().lower()
+
+
 def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bool:
-    """Tick one ethnicity checkbox by its visible label text."""
+    """Tick one ethnicity checkbox by its visible label text.
+
+    Normalises parentheses so "Asian (United States of America)" matches the
+    actual Workday label "Asian United States of America".
+    """
     if not ethnicity_label:
         return False
+
+    normalised_target = _normalise_ethnicity(ethnicity_label)
+
+    # 1. Iterate all ethnicity checkboxes and match by normalised label text.
     try:
-        label_loc = page.get_by_text(re.compile(re.escape(ethnicity_label), re.IGNORECASE)).first
+        checkbox_group = page.locator("[data-automation-id='selectMany']").first
+        if checkbox_group.count() > 0:
+            labels = checkbox_group.locator("label")
+            count = labels.count()
+            for i in range(count):
+                try:
+                    lbl = labels.nth(i)
+                    lbl_text = _normalise_ethnicity(lbl.inner_text(timeout=500))
+                    if lbl_text == normalised_target:
+                        for_id = lbl.get_attribute("for") or ""
+                        if for_id:
+                            cb = page.locator(f"#{for_id}").first
+                        else:
+                            cb = lbl.locator("xpath=preceding-sibling::input[@type='checkbox']").first
+                        if cb.count() > 0 and not cb.is_checked():
+                            cb.click(timeout=timeout_ms)
+                        print(
+                            f"[auto-apply] Ticked ethnicity checkbox: {lbl.inner_text(timeout=500).strip()!r}",
+                            flush=True,
+                        )
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # 2. Fuzzy fallback: get_by_text with normalised label
+    try:
+        label_loc = page.get_by_text(
+            re.compile(re.escape(normalised_target), re.IGNORECASE)
+        ).first
         checkbox = label_loc.locator(
             "xpath=ancestor::*[.//input[@type='checkbox'] or .//*[@role='checkbox']][1]"
         ).locator("input[type='checkbox'], [role='checkbox']").first
@@ -1011,11 +1129,21 @@ def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bo
         return True
     except Exception:
         pass
-    try:
-        page.get_by_label(re.compile(re.escape(ethnicity_label), re.IGNORECASE)).first.check(timeout=timeout_ms)
-        return True
-    except Exception:
-        return False
+
+    # 3. get_by_label fallback (original label, then normalised)
+    for attempt_label in (ethnicity_label, normalised_target):
+        try:
+            page.get_by_label(re.compile(re.escape(attempt_label), re.IGNORECASE)).first.check(timeout=timeout_ms)
+            return True
+        except Exception:
+            continue
+
+    print(
+        f"[auto-apply] Warning: could not find ethnicity checkbox for {ethnicity_label!r}."
+        " Please tick it manually if required.",
+        flush=True,
+    )
+    return False
 
 
 def _fill_disability_section(page, profile: ApplicationProfile, timeout_ms: int) -> None:
