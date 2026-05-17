@@ -46,10 +46,9 @@ class ApplicationProfile:
     age_18_or_older: str = "Yes"
     hispanic_or_latino: str = "No"
     # Voluntary Disclosures — set per user's self-identification.
-    # NOTE: The label in Workday's HTML is "Asian United States of America"
-    # (no parentheses).  We normalise both sides in _check_ethnicity_checkbox
-    # so either spelling works.
-    ethnicity: str = "Asian United States of America"
+    # Keep ethnicity short; Workday may render it with or without the country
+    # suffix/parentheses depending on the page state.
+    ethnicity: str = "Asian"
     gender: str = "Male"
     veteran_status: str = "Not a Veteran"
     disability_status: str = "No, I do not have a disability and have not had one in the past"
@@ -186,7 +185,11 @@ def _run_playwright_apply(
     keep_open_for_review = headed
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
-        context = browser.new_context(storage_state=str(auth_state_path))
+        context = browser.new_context(
+            storage_state=str(auth_state_path),
+            viewport={"width": 1440, "height": 820},
+            screen={"width": 1440, "height": 820},
+        )
         page = context.new_page()
         try:
             page.goto(job.url, wait_until="domcontentloaded", timeout=60_000)
@@ -283,6 +286,19 @@ class SectionResult:
 # are often left empty and must be fixed by the user before clicking Next.
 MANUAL_ADVANCE_SECTIONS: tuple[str, ...] = ("my experience",)
 
+# These sections are only safe after the current run has visited Quick Apply.
+# If Workday opens a draft in any of them, first return to Quick Apply so the
+# resume upload is the first verified action.
+SECTIONS_REQUIRING_QUICK_APPLY_FIRST: tuple[str, ...] = (
+    "my experience",
+    "application questions",
+    "voluntary disclosures",
+    "voluntary personal information",
+    "self identify",
+    "self-identification of disability",
+    "review",
+)
+
 # How long to wait for the user to manually advance past a manual section before
 # giving up (in milliseconds). Default: 15 minutes.
 MANUAL_ADVANCE_TIMEOUT_MS = 15 * 60 * 1_000
@@ -321,21 +337,29 @@ def _current_section_label(body_text_or_page) -> str | None:
 
     page = body_text_or_page
 
-    # 1. Feature detection — most reliable, doesn't depend on labels.
-    feature_label = _detect_section_by_features(page)
-    if feature_label is not None:
-        return feature_label
-
-    # 2. Heading text.
+    # 1. Heading text. This is the best signal when Workday renders a page
+    # title like "Quick Apply" or "My Experience". Body text can include
+    # hidden/offscreen fields from other sections, especially in drafts.
     heading = _read_active_section_heading(page)
     if heading is not None:
         match = _section_from_text(heading)
         if match is not None:
             return match
 
-    # 3. Body-text fallback.
+    # 2. Feature detection — useful when Workday hides the left panel or does
+    # not expose a clean heading for the active step.
+    feature_label = _detect_section_by_features(page)
+    if feature_label is not None:
+        return feature_label
+
+    # 3. Body-text fallback. Some Workday pages keep stale text from other
+    # sections in the body, so do not trust Voluntary Disclosures unless its
+    # actual form controls are present.
     try:
-        return _section_from_text(_safe_body_text(page))
+        fallback = _section_from_text(_safe_body_text(page))
+        if fallback in {"voluntary disclosures", "voluntary personal information"} and not _has_voluntary_disclosure_controls(page):
+            return None
+        return fallback
     except Exception:
         return None
 
@@ -345,12 +369,12 @@ def _detect_section_by_features(page) -> str | None:
     try:
         if page.locator("input[type='file']").count() > 0:
             try:
-                body_lower = _safe_body_text(page).lower()
+                body_lower_for_upload = _safe_body_text(page).lower()
             except Exception:
-                body_lower = ""
+                body_lower_for_upload = ""
             if (
-                "work experience" not in body_lower
-                and "education" not in body_lower
+                "work experience" not in body_lower_for_upload
+                and "education" not in body_lower_for_upload
             ):
                 return "quick apply"
     except Exception:
@@ -361,14 +385,16 @@ def _detect_section_by_features(page) -> str | None:
     except Exception:
         return None
 
-    if "i acknowledge" in body_lower or "electronic signature" in body_lower:
-        return "review"
-    if "cc-305" in body_lower or "section 503" in body_lower:
-        return "self-identification of disability"
-    if "hispanic or latino" in body_lower:
-        return "voluntary disclosures"
+    if _has_quick_apply_content(body_lower):
+        return "quick apply"
     if "work experience" in body_lower and "education" in body_lower:
         return "my experience"
+    if _has_voluntary_disclosure_content(body_lower) and _has_voluntary_disclosure_controls(page):
+        return "voluntary disclosures"
+    if "cc-305" in body_lower or "section 503" in body_lower:
+        return "self-identification of disability"
+    if "i acknowledge" in body_lower or "electronic signature" in body_lower:
+        return "review"
     if (
         "eligible to work in the united states" in body_lower
         or "federal work-study" in body_lower
@@ -425,6 +451,26 @@ def _read_active_section_heading(page) -> str | None:
     return None
 
 
+def _has_voluntary_disclosure_controls(page) -> bool:
+    try:
+        for selector in (
+            "[data-metadata-id='radioButtonSelectList.hispanicOrLatino']",
+            "[data-metadata-id='checkBoxSelectList.ethnicityMulti']",
+            "[data-metadata-id='dropDownSelectList.genderDropdown']",
+            "[data-metadata-id='dropDownSelectList.veteranStatusDropdown']",
+            "[data-metadata-id='checkBoxInput.agreementCheckbox']",
+            "#checkBoxInput\\.agreementCheckbox",
+        ):
+            try:
+                if page.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def _wait_for_user_to_advance(
     page,
     current_section: str,
@@ -449,6 +495,20 @@ def _wait_for_user_to_advance(
     return False
 
 
+def _wait_for_known_section_label(page, timeout_ms: int = 5_000, poll_ms: int = 500) -> str | None:
+    elapsed = 0
+    while elapsed < timeout_ms:
+        try:
+            page.wait_for_timeout(poll_ms)
+        except Exception:
+            return None
+        elapsed += poll_ms
+        section_label = _current_section_label(page)
+        if section_label is not None:
+            return section_label
+    return None
+
+
 def _complete_application_flow(
     page,
     job: AutoApplyJob,
@@ -461,39 +521,52 @@ def _complete_application_flow(
     last_section_label: str | None = None
     repeated_section_count = 0
     unknown_section_streak = 0
+    quick_apply_started = False
     for step_index in range(max_steps):
         section_label = _current_section_label(page)
+        if section_label is None:
+            section_label = _wait_for_known_section_label(page)
         print(
             f"[auto-apply] Step {step_index + 1}: section = {section_label!r}.",
             flush=True,
         )
 
         if section_label is None:
-            unknown_section_streak += 1
-            if unknown_section_streak >= 2:
-                _write_debug_dump(page, debug_dump_dir, job.id, "section_unknown")
-                print(
-                    "[auto-apply] Section is unrecognised on two consecutive"
-                    " steps. Pausing so you can complete the application"
-                    " manually. (A debug dump was saved.)",
-                    flush=True,
-                )
-                advanced = _wait_for_user_to_advance(page, "unknown")
-                if not advanced:
-                    return AutoApplyResult(
-                        job.id,
-                        False,
-                        False,
-                        True,
-                        "Could not identify the current Workday section."
-                        " Stopped to avoid clicking Next on unknown screens.",
-                    )
-                last_section_label = None
-                repeated_section_count = 0
-                unknown_section_streak = 0
-                continue
+            _write_debug_dump(page, debug_dump_dir, job.id, "section_unknown")
+            return AutoApplyResult(
+                job.id,
+                False,
+                False,
+                True,
+                "Could not identify the current Workday section. "
+                "Stopped to avoid clicking Next on an unknown screen.",
+            )
         else:
             unknown_section_streak = 0
+
+        if (
+            section_label in SECTIONS_REQUIRING_QUICK_APPLY_FIRST
+            and not quick_apply_started
+        ):
+            print(
+                f"[auto-apply] Workday opened on '{section_label}'. Returning"
+                " to Quick Apply first so the resume upload is verified.",
+                flush=True,
+            )
+            if not _go_to_quick_apply_section(page, timeout_ms):
+                _write_debug_dump(page, debug_dump_dir, job.id, "quick_apply_not_first")
+                return AutoApplyResult(
+                    job.id,
+                    False,
+                    False,
+                    True,
+                    "Workday opened past Quick Apply and the tool could not"
+                    " return to Quick Apply. Please click Quick Apply in the"
+                    " left panel and rerun auto-apply.",
+                )
+            section_label = "quick apply"
+            last_section_label = None
+            repeated_section_count = 0
 
         if section_label is not None and section_label == last_section_label:
             repeated_section_count += 1
@@ -523,12 +596,14 @@ def _complete_application_flow(
             repeated_section_count = 0
         last_section_label = section_label
 
-        section_result = _fill_known_section(page, job, profile, timeout_ms)
+        section_result = _fill_known_section(page, job, profile, timeout_ms, section_label)
         if not section_result.ok:
             return AutoApplyResult(job.id, False, False, True, section_result.message or "Manual review needed.")
+        if section_label == "quick apply":
+            quick_apply_started = True
 
         body_text = _safe_body_text(page)
-        if _looks_like_review_page(body_text):
+        if section_label == "review" or _looks_like_review_page(body_text):
             if not _check_review_signature(page, timeout_ms):
                 print(
                     "[auto-apply] Paused on 'review': could not find the signature"
@@ -540,13 +615,10 @@ def _complete_application_flow(
                 advanced = _wait_for_user_to_advance(page, "review")
                 if not advanced:
                     return AutoApplyResult(job.id, False, False, True, "Review signature checkbox was not found.")
-                return AutoApplyResult(
-                    job.id,
-                    True,
-                    True,
-                    False,
-                    "Application submitted by user after auto-apply paused on Review.",
-                )
+                page.wait_for_timeout(1_000)
+                last_section_label = None
+                repeated_section_count = 0
+                continue
             if not submit:
                 _write_debug_dump(page, debug_dump_dir, job.id, "filled_review_not_submitted")
                 return AutoApplyResult(
@@ -598,10 +670,36 @@ def _complete_application_flow(
         )
 
         page.wait_for_timeout(1_500)
-        if _page_has_blocking_errors(page):
+        next_section = _current_section_label(page)
+        if next_section in MANUAL_ADVANCE_SECTIONS:
+            continue
+        if next_section == section_label and _page_has_blocking_errors(page):
             return AutoApplyResult(job.id, False, False, True, "Workday shows required fields or validation errors.")
 
     return AutoApplyResult(job.id, False, False, True, "Reached the application step limit before Review.")
+
+
+def _go_to_quick_apply_section(page, timeout_ms: int) -> bool:
+    if _current_section_label(page) == "quick apply":
+        return True
+
+    quick_apply_pattern = re.compile(r"^quick apply$", re.IGNORECASE)
+    click_candidates = [
+        lambda: page.get_by_role("link", name=quick_apply_pattern).first,
+        lambda: page.get_by_role("button", name=quick_apply_pattern).first,
+        lambda: page.get_by_text(quick_apply_pattern).first,
+        lambda: page.get_by_text(quick_apply_pattern).last,
+    ]
+
+    for candidate in click_candidates:
+        try:
+            candidate().click(timeout=timeout_ms, force=True)
+            page.wait_for_timeout(1_000)
+            if _current_section_label(page) == "quick apply":
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _fill_known_section(
@@ -609,12 +707,17 @@ def _fill_known_section(
     job: AutoApplyJob,
     profile: ApplicationProfile,
     timeout_ms: int,
+    section_label: str | None = None,
 ) -> SectionResult:
-    section_label = _current_section_label(page)
     body_text = _safe_body_text(page).lower()
 
     if section_label is None:
-        section_label = _section_from_text(body_text)
+        section_label = _current_section_label(page)
+    if section_label is None:
+        fallback_label = _section_from_text(body_text)
+        if fallback_label in {"voluntary disclosures", "voluntary personal information"} and not _has_voluntary_disclosure_controls(page):
+            fallback_label = None
+        section_label = fallback_label
 
     if section_label == "my experience":
         # Workday's resume parser pre-fills Work Experience and Education from
@@ -627,23 +730,20 @@ def _fill_known_section(
         # Use RESUME_UPLOAD_TIMEOUT_MS (45 s) — not timeout_ms (10 s) — so the
         # Workday async virus-scan has enough time to finish before we advance.
         if not _wait_for_resume_attached(page, job.resume_path, RESUME_UPLOAD_TIMEOUT_MS):
-            # Don't hard-fail — ASU Workday's attachment chip selector may not
-            # match any known data-automation-id. Log a warning and proceed;
-            # if Next fails, the stuck-section handler will pause for the user.
-            print(
-                "[auto-apply] Warning: could not confirm upload via attachment"
-                " chip within 45 s. Proceeding anyway — check the browser"
-                " window to verify the resume was accepted.",
-                flush=True,
+            return SectionResult(
+                False,
+                "Resume upload was selected but Workday did not confirm the attachment. "
+                "Please verify the resume is attached on Quick Apply, then click Next manually.",
             )
-        else:
-            print(
-                f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
-                flush=True,
-            )
+        print(
+            f"[auto-apply] Quick Apply: resume '{job.resume_path.name}' attached.",
+            flush=True,
+        )
         return SectionResult(True)
 
-    if section_label == "application questions" or "application questions" in body_text:
+    if section_label == "application questions" or (
+        section_label is None and _has_application_questions_content(body_text)
+    ):
         _answer_dropdown_by_question(
             page,
             r"eligible to work in the united states without asu sponsorship",
@@ -670,28 +770,28 @@ def _fill_known_section(
         )
         return SectionResult(True)
 
-    if section_label in {"voluntary personal information", "voluntary disclosures"} or "hispanic or latino" in body_text:
-        # 1. Hispanic or Latino (radio: Yes / No)
-        _answer_radio_by_question(page, r"hispanic or latino", profile.hispanic_or_latino, timeout_ms)
-        # 2. Ethnicity (checkboxes — tick the matching label).
-        #    Workday's label is "Asian United States of America" (no parentheses).
-        #    _check_ethnicity_checkbox normalises both sides so either spelling matches.
-        _check_ethnicity_checkbox(page, profile.ethnicity, timeout_ms)
-        # 3. Gender (dropdown)
-        _answer_dropdown_by_question(page, r"select your gender", profile.gender, timeout_ms)
-        # 4. Veteran status (dropdown)
-        _answer_dropdown_by_question(page, r"veteran status", profile.veteran_status, timeout_ms)
-        # 5. Terms & Conditions agreement checkbox — lives on the SAME page as the
-        #    voluntary fields on ASU Workday (fieldset "Terms and Conditions").
-        #    data-automation-id = checkBoxInput.agreementCheckbox
-        #    label = "I understand that checking this box is the legal equivalent
-        #             of a signature accepting the terms above"
-        #    This is required (aria-required=true). Tick it now so Next is not blocked.
-        _tick_agreement_checkbox(page, timeout_ms)
+    if section_label in {"voluntary personal information", "voluntary disclosures"} or (
+        section_label is None
+        and _has_voluntary_disclosure_content(body_text)
+        and _has_voluntary_disclosure_controls(page)
+    ):
+        if not _fill_voluntary_disclosures(page, profile, timeout_ms):
+            return SectionResult(
+                False,
+                "Could not fill all Voluntary Disclosures fields automatically. "
+                "Please fill the highlighted fields manually and click Next.",
+            )
         return SectionResult(True)
 
-    if section_label in {"self identify", "self-identification of disability"} or "cc-305" in body_text:
-        _fill_disability_section(page, profile, timeout_ms)
+    if section_label in {"self identify", "self-identification of disability"} or (
+        section_label is None and _has_disability_self_id_content(body_text)
+    ):
+        if not _fill_disability_section(page, profile, timeout_ms):
+            return SectionResult(
+                False,
+                "Could not fill all Self Identify fields automatically. "
+                "Please fill the highlighted fields manually and click Next.",
+            )
         return SectionResult(True)
 
     if section_label == "review" or _looks_like_review_page(body_text):
@@ -699,6 +799,213 @@ def _fill_known_section(
         return SectionResult(True)
 
     return SectionResult(True)
+
+
+def _fill_voluntary_disclosures(page, profile: ApplicationProfile, timeout_ms: int) -> bool:
+    """Fill ASU Workday's Voluntary Disclosures page and verify the fields.
+
+    Workday keeps these widgets in stable ``data-metadata-id`` containers even
+    when generated ids/classes change, so we target those containers directly.
+    """
+    print("[auto-apply] Filling Voluntary Disclosures required fields.", flush=True)
+
+    hispanic_ok = _select_workday_labeled_input(
+        page,
+        "radioButtonSelectList.hispanicOrLatino",
+        profile.hispanic_or_latino,
+        "radio",
+        timeout_ms,
+    ) or _answer_radio_by_question(page, r"hispanic or latino", profile.hispanic_or_latino, timeout_ms)
+    print(
+        f"[auto-apply] Voluntary Disclosures Hispanic/Latino: "
+        f"{'selected' if hispanic_ok else 'not selected'} ({profile.hispanic_or_latino}).",
+        flush=True,
+    )
+
+    ethnicity_ok = _select_workday_labeled_input(
+        page,
+        "checkBoxSelectList.ethnicityMulti",
+        profile.ethnicity,
+        "checkbox",
+        timeout_ms,
+    ) or _check_ethnicity_checkbox(page, profile.ethnicity, timeout_ms)
+    print(
+        f"[auto-apply] Voluntary Disclosures ethnicity: "
+        f"{'selected' if ethnicity_ok else 'not selected'} ({profile.ethnicity}).",
+        flush=True,
+    )
+
+    gender_ok = _answer_dropdown_by_metadata(
+        page,
+        "dropDownSelectList.genderDropdown",
+        profile.gender,
+        timeout_ms,
+    )
+    print(
+        f"[auto-apply] Voluntary Disclosures gender: "
+        f"{'verified' if gender_ok else 'not verified'} ({profile.gender}).",
+        flush=True,
+    )
+
+    veteran_ok = _answer_dropdown_by_metadata(
+        page,
+        "dropDownSelectList.veteranStatusDropdown",
+        profile.veteran_status,
+        timeout_ms,
+    )
+    print(
+        f"[auto-apply] Voluntary Disclosures veteran status: "
+        f"{'verified' if veteran_ok else 'not verified'} ({profile.veteran_status}).",
+        flush=True,
+    )
+
+    terms_ok = _tick_agreement_checkbox(page, timeout_ms)
+    print(
+        f"[auto-apply] Voluntary Disclosures terms agreement: "
+        f"{'checked' if terms_ok else 'not checked'}.",
+        flush=True,
+    )
+    try:
+        page.wait_for_timeout(700)
+    except Exception:
+        pass
+
+    missing = _missing_voluntary_disclosure_fields(page, profile)
+    if not missing:
+        print("[auto-apply] Voluntary Disclosures: all required fields are filled.", flush=True)
+        return True
+
+    print(
+        "[auto-apply] Voluntary Disclosures still missing: " + ", ".join(missing),
+        flush=True,
+    )
+    return False
+
+
+def _select_workday_labeled_input(
+    page,
+    metadata_id: str,
+    label_text: str,
+    input_type: str,
+    timeout_ms: int,
+) -> bool:
+    try:
+        container = page.locator(f"[data-metadata-id='{metadata_id}']").first
+        if container.count() == 0:
+            return False
+        labels = container.locator("label")
+        label_count = labels.count()
+        for index in range(label_count):
+            label = labels.nth(index)
+            try:
+                text = label.inner_text(timeout=500)
+            except Exception:
+                continue
+            if not _normalised_label_matches(text, label_text):
+                continue
+            try:
+                label.scroll_into_view_if_needed(timeout=timeout_ms)
+            except Exception:
+                pass
+            try:
+                label.click(timeout=timeout_ms, force=True)
+            except Exception:
+                for_id = ""
+                try:
+                    for_id = label.get_attribute("for") or ""
+                except Exception:
+                    pass
+                if not for_id:
+                    continue
+                page.locator(f"#{for_id}").first.click(timeout=timeout_ms, force=True)
+            print(f"[auto-apply] Selected {metadata_id}: {text.strip()}", flush=True)
+            return True
+    except Exception:
+        pass
+    return _click_labeled_input_by_text(page, label_text, input_type, timeout_ms)
+
+
+def _missing_voluntary_disclosure_fields(page, profile: ApplicationProfile) -> list[str]:
+    try:
+        return page.evaluate(
+            r"""
+            ({ gender, veteranStatus }) => {
+              const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const selectedText = (metadataId) => {
+                const root = document.querySelector(`[data-metadata-id="${metadataId}"]`);
+                const selected = root?.querySelector('[data-automation-id="selectSelectedOption"]');
+                return norm(selected?.textContent);
+              };
+              const checkedIn = (metadataId, selector) => {
+                const root = document.querySelector(`[data-metadata-id="${metadataId}"]`);
+                return !!root?.querySelector(selector);
+              };
+              const labelCheckboxChecked = (needle) => {
+                const target = norm(needle);
+                for (const label of document.querySelectorAll('label')) {
+                  if (!norm(label.textContent).includes(target)) {
+                    continue;
+                  }
+                  const forId = label.getAttribute('for');
+                  const input = label.control || (forId ? document.getElementById(forId) : null);
+                  if (input?.type === 'checkbox' && input.checked) {
+                    return true;
+                  }
+                }
+                return false;
+              };
+              const missing = [];
+              if (!checkedIn('radioButtonSelectList.hispanicOrLatino', 'input[type="radio"]:checked')) {
+                missing.push('Hispanic/Latino');
+              }
+              if (!checkedIn('checkBoxSelectList.ethnicityMulti', 'input[type="checkbox"]:checked')) {
+                missing.push('ethnicity');
+              }
+              const selectedGender = selectedText('dropDownSelectList.genderDropdown');
+              const selectedVeteran = selectedText('dropDownSelectList.veteranStatusDropdown');
+              const expectedGender = (gender || '').toLowerCase();
+              const expectedVeteran = (veteranStatus || '').toLowerCase();
+              if (!selectedGender || selectedGender === 'select one' || !selectedGender.includes(expectedGender)) {
+                missing.push('gender');
+              }
+              if (!selectedVeteran || selectedVeteran === 'select one' || !selectedVeteran.includes(expectedVeteran)) {
+                missing.push('veteran status');
+              }
+              if (
+                !checkedIn('checkBoxInput.agreementCheckbox', 'input[type="checkbox"]:checked')
+                && !labelCheckboxChecked('legal equivalent of a signature')
+              ) {
+                missing.push('terms agreement');
+              }
+              return missing;
+            }
+            """,
+            {"gender": profile.gender, "veteranStatus": profile.veteran_status},
+        )
+    except Exception as exc:
+        print(f"[auto-apply] Voluntary Disclosures verifier error: {exc}", flush=True)
+        return _missing_voluntary_disclosure_fields_by_locator(page, profile)
+
+
+def _missing_voluntary_disclosure_fields_by_locator(page, profile: ApplicationProfile) -> list[str]:
+    missing: list[str] = []
+    try:
+        if page.locator("[data-metadata-id='radioButtonSelectList.hispanicOrLatino'] input[type='radio']:checked").count() == 0:
+            missing.append("Hispanic/Latino")
+    except Exception:
+        missing.append("Hispanic/Latino")
+    try:
+        if page.locator("[data-metadata-id='checkBoxSelectList.ethnicityMulti'] input[type='checkbox']:checked").count() == 0:
+            missing.append("ethnicity")
+    except Exception:
+        missing.append("ethnicity")
+    if not _dropdown_selected_matches(page, "dropDownSelectList.genderDropdown", profile.gender):
+        missing.append("gender")
+    if not _dropdown_selected_matches(page, "dropDownSelectList.veteranStatusDropdown", profile.veteran_status):
+        missing.append("veteran status")
+    if not _terms_agreement_is_checked(page):
+        missing.append("terms agreement")
+    return missing
 
 
 def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
@@ -712,12 +1019,19 @@ def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
     We try three selectors in order of specificity so we always find it even if
     Workday changes the generated element IDs.
     """
+    if _check_checkbox_by_label_dom(page, "legal equivalent of a signature", timeout_ms):
+        print("[auto-apply] Ticked Terms & Conditions agreement checkbox.", flush=True)
+        return True
+
     # 1. Direct data-automation-id selector (most reliable)
     try:
-        cb = page.locator("[data-automation-id='checkBoxInput.agreementCheckbox'] input[type='checkbox']").first
+        cb = page.locator(
+            "#checkBoxInput\\.agreementCheckbox input[type='checkbox'],"
+            " [data-metadata-id='checkBoxInput.agreementCheckbox'] input[type='checkbox']"
+        ).first
         if cb.count() > 0:
             if not cb.is_checked():
-                cb.click(timeout=timeout_ms)
+                cb.check(timeout=timeout_ms)
                 print("[auto-apply] Ticked Terms & Conditions agreement checkbox.", flush=True)
             else:
                 print("[auto-apply] Terms & Conditions agreement checkbox already checked.", flush=True)
@@ -731,7 +1045,7 @@ def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
             re.compile(r"legal equivalent of a signature", re.IGNORECASE)
         ).first
         if not cb.is_checked():
-            cb.click(timeout=timeout_ms)
+            cb.check(timeout=timeout_ms)
             print("[auto-apply] Ticked Terms & Conditions agreement checkbox (via label).", flush=True)
         return True
     except Exception:
@@ -740,12 +1054,12 @@ def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
     # 3. By the containing div's data-automation-id (fallback)
     try:
         cb = page.locator(
-            "div[data-automation-id='checkBoxInput.agreementCheckbox'] input[type='checkbox'],"
-            " #checkBoxInput\\.agreementCheckbox-da0584e2e942c86d-input"
+            "[id^='checkBoxInput.agreementCheckbox'][id$='-input'],"
+            " input[id*='agreementCheckbox'][type='checkbox']"
         ).first
         if cb.count() > 0:
             if not cb.is_checked():
-                cb.click(timeout=timeout_ms)
+                cb.check(timeout=timeout_ms)
                 print("[auto-apply] Ticked Terms & Conditions agreement checkbox (fallback selector).", flush=True)
             return True
     except Exception:
@@ -756,6 +1070,71 @@ def _tick_agreement_checkbox(page, timeout_ms: int) -> bool:
         " If Next is blocked, please tick it manually.",
         flush=True,
     )
+    return False
+
+
+def _terms_agreement_is_checked(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                r"""
+                () => {
+                  const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                  for (const label of document.querySelectorAll('label')) {
+                    if (!norm(label.textContent).includes('legal equivalent of a signature')) {
+                      continue;
+                    }
+                    const forId = label.getAttribute('for');
+                    const input = label.control || (forId ? document.getElementById(forId) : null);
+                    if (input?.type === 'checkbox') {
+                      return !!input.checked;
+                    }
+                  }
+                  const input = document.querySelector('[data-metadata-id="checkBoxInput.agreementCheckbox"] input[type="checkbox"], input[id*="agreementCheckbox"][type="checkbox"]');
+                  return !!input?.checked;
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _check_checkbox_by_label_dom(page, label_contains: str, timeout_ms: int) -> bool:
+    try:
+        clicked = page.evaluate(
+            r"""
+            ({ labelContains }) => {
+              const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const target = norm(labelContains);
+              for (const label of document.querySelectorAll('label')) {
+                if (!norm(label.textContent).includes(target)) {
+                  continue;
+                }
+                const forId = label.getAttribute('for');
+                const input = label.control || (forId ? document.getElementById(forId) : null);
+                if (!input || input.type !== 'checkbox' || input.disabled) {
+                  continue;
+                }
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                if (!input.checked) {
+                  input.click();
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                  input.dispatchEvent(new Event('blur', { bubbles: true }));
+                }
+                return true;
+              }
+              return false;
+            }
+            """,
+            {"labelContains": label_contains},
+        )
+        if clicked:
+            page.wait_for_timeout(min(timeout_ms, 500))
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -923,12 +1302,7 @@ def _resume_already_attached(page, resume_path: Path) -> bool:
     try:
         for selector in (
             "[data-automation-id='file-uploaded']",
-            "[data-automation-id='delete-file']",
-            "[data-automation-id='removeFile']",
             "[data-automation-id='attachments-list'] [data-automation-id='file-uploaded']",
-            "[data-automation-id='fileAttachmentContainer']",
-            "button[aria-label*='Delete']",
-            "button[aria-label*='Remove']",
         ):
             try:
                 if page.locator(selector).count() > 0:
@@ -939,16 +1313,37 @@ def _resume_already_attached(page, resume_path: Path) -> bool:
         pass
 
     try:
-        has_file = page.evaluate(
-            "() => {\n"
-            "  const inputs = document.querySelectorAll(\"input[type='file']\");\n"
-            "  for (const i of inputs) {\n"
-            "    if (i.files && i.files.length > 0) return true;\n"
-            "  }\n"
-            "  return false;\n"
-            "}"
+        attached = page.evaluate(
+            r"""
+            ({ filename }) => {
+              const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const target = norm(filename);
+              const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const attachmentSelector = [
+                '[data-automation-id="file-uploaded"]',
+                '[data-automation-id="attachments-list"]',
+                '[data-automation-id="delete-file"]',
+                '[data-automation-id="removeFile"]'
+              ].join(',');
+              for (const element of document.querySelectorAll(attachmentSelector)) {
+                if (!visible(element)) continue;
+                const container = element.closest('[data-automation-id="attachments-list"], [data-automation-id="file-uploaded"], li, tr, [role="listitem"], div');
+                const text = norm(container?.textContent || element.textContent);
+                if (!text.includes(target)) continue;
+                if (text.includes('recent') || text.includes('previous resume') || text.includes('use a previous')) continue;
+                return true;
+              }
+              return false;
+            }
+            """,
+            {"filename": resume_path.name},
         )
-        if has_file:
+        if attached:
             return True
     except Exception:
         pass
@@ -1028,21 +1423,299 @@ def _answer_dropdown_by_question(
     return False
 
 
-def _choose_dropdown_answer(page, answer: str, timeout_ms: int) -> bool:
-    escaped = re.escape(answer)
-    candidates = [
-        lambda: page.get_by_role("option", name=re.compile(rf"^{escaped}$", re.IGNORECASE)).first,
-        lambda: page.get_by_role("menuitem", name=re.compile(rf"^{escaped}$", re.IGNORECASE)).first,
-        lambda: page.get_by_text(re.compile(rf"^{escaped}$", re.IGNORECASE)).last,
-    ]
-    for candidate in candidates:
+def _answer_dropdown_by_metadata(
+    page,
+    metadata_id: str,
+    answer: str,
+    timeout_ms: int,
+) -> bool:
+    """Select a Workday dropdown by its stable data-metadata-id."""
+    if _dropdown_selected_matches(page, metadata_id, answer):
+        return True
+
+    option_timeout_ms = min(timeout_ms, 2_000)
+    for _ in range(3):
+        if not _open_workday_dropdown(page, metadata_id, timeout_ms):
+            continue
+        if _click_open_workday_option_by_dom(page, metadata_id, answer):
+            page.wait_for_timeout(300)
+            if _commit_workday_dropdown_selection(page, metadata_id, answer, option_timeout_ms):
+                print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+                return True
+        _choose_dropdown_answer(page, answer, option_timeout_ms, metadata_id)
+        if _commit_workday_dropdown_selection(page, metadata_id, answer, timeout_ms):
+            print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+            return True
+        _type_into_open_workday_dropdown(page, metadata_id, answer, option_timeout_ms)
+        if _commit_workday_dropdown_selection(page, metadata_id, answer, option_timeout_ms):
+            print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+            return True
+        if _click_open_workday_option_by_dom(page, metadata_id, answer):
+            page.wait_for_timeout(300)
+            if _commit_workday_dropdown_selection(page, metadata_id, answer, option_timeout_ms):
+                print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+                return True
+        if _choose_dropdown_answer(page, answer, option_timeout_ms, None):
+            if _commit_workday_dropdown_selection(page, metadata_id, answer, option_timeout_ms):
+                print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+                return True
+        if _dropdown_selected_matches(page, metadata_id, answer):
+            print(f"[auto-apply] Selected dropdown value: {answer}", flush=True)
+            return True
         try:
-            locator = candidate()
-            locator.click(timeout=timeout_ms)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+        except Exception:
+            pass
+
+    options = _visible_workday_dropdown_options(page)
+    if options:
+        print(
+            f"[auto-apply] Could not select dropdown value {answer!r}. "
+            f"Visible options: {options}",
+            flush=True,
+        )
+    return False
+
+
+def _commit_workday_dropdown_selection(page, metadata_id: str, answer: str, timeout_ms: int) -> bool:
+    """Nudge Workday to commit/render a dropdown selection after an option click."""
+    if _dropdown_selected_matches(page, metadata_id, answer):
+        return True
+
+    selectors = [
+        f"[data-metadata-id='{metadata_id}']",
+        f"[data-metadata-id='{metadata_id}'] [data-automation-id='selectSelectedOption']",
+        f"[data-metadata-id='{metadata_id}'] [data-automation-id='selectShowAll']",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() == 0:
+                continue
+            locator.click(timeout=timeout_ms, force=True)
+            page.wait_for_timeout(500)
+            if _dropdown_selected_matches(page, metadata_id, answer):
+                return True
+            try:
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
+            if _dropdown_selected_matches(page, metadata_id, answer):
+                return True
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(250)
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+    try:
+        page.locator("body").click(timeout=timeout_ms, position={"x": 5, "y": 5}, force=True)
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
+    return _dropdown_selected_matches(page, metadata_id, answer)
+
+
+def _open_workday_dropdown(page, metadata_id: str, timeout_ms: int) -> bool:
+    selectors = [
+        f"[data-metadata-id='{metadata_id}']",
+        f"[id^='{metadata_id}-input']",
+    ]
+    for selector in selectors:
+        try:
+            field = page.locator(selector).first
+            if field.count() == 0:
+                continue
+            try:
+                field.scroll_into_view_if_needed(timeout=timeout_ms)
+            except Exception:
+                pass
+            opener = field.locator("[data-automation-id='selectShowAll']").first
+            if opener.count() > 0:
+                opener.click(timeout=timeout_ms, force=True)
+            else:
+                field.click(timeout=timeout_ms, force=True)
+            page.wait_for_timeout(700)
             return True
         except Exception:
             continue
     return False
+
+
+def _dropdown_selected_matches(page, metadata_id: str, answer: str) -> bool:
+    try:
+        selected = page.evaluate(
+            r"""
+            ({ metadataId }) => {
+              const root = document.querySelector(`[data-metadata-id="${metadataId}"]`);
+              const selectedOption = root?.querySelector('[data-automation-id="selectSelectedOption"]');
+              return (selectedOption?.textContent || '').trim().toLowerCase();
+            }
+            """,
+            {"metadataId": metadata_id},
+        )
+        return bool(selected) and answer.lower() in selected
+    except Exception:
+        return False
+
+
+def _type_into_open_workday_dropdown(page, metadata_id: str, answer: str, timeout_ms: int) -> bool:
+    search_selectors = [
+        "[data-automation-id='searchBox'] input",
+        "[data-automation-id='searchBox']",
+        "input[role='combobox']",
+        "input[type='text']",
+        "[role='textbox']",
+    ]
+    for selector in search_selectors:
+        try:
+            field = page.locator(selector).last
+            if field.count() == 0:
+                continue
+            field.click(timeout=timeout_ms, force=True)
+            try:
+                field.fill(answer, timeout=timeout_ms)
+            except Exception:
+                page.keyboard.press("Control+A")
+                page.keyboard.type(answer)
+            page.wait_for_timeout(700)
+            if _choose_dropdown_answer(page, answer, timeout_ms, metadata_id):
+                return True
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(700)
+            if _dropdown_selected_matches(page, metadata_id, answer):
+                return True
+        except Exception:
+            continue
+
+    try:
+        page.keyboard.type(answer)
+        page.wait_for_timeout(700)
+        if _choose_dropdown_answer(page, answer, timeout_ms, metadata_id):
+            return True
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(700)
+        return _dropdown_selected_matches(page, metadata_id, answer)
+    except Exception:
+        return False
+
+
+def _click_open_workday_option_by_dom(page, metadata_id: str, answer: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                r"""
+                ({ answer }) => {
+                  const norm = (value) => (value || '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+                  const target = norm(answer);
+                  const selectors = [
+                    '[role="option"]',
+                    '[role="menuitem"]',
+                    '[data-automation-id="promptOption"]',
+                    '[data-automation-label]',
+                    '.gwt-Label'
+                  ];
+                  const elements = Array.from(document.querySelectorAll(selectors.join(',')));
+                  for (const element of elements) {
+                    const rect = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') {
+                      continue;
+                    }
+                    const text = norm(element.getAttribute('data-automation-label') || element.textContent);
+                    if (text !== target) {
+                      continue;
+                    }
+                    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    element.click();
+                    return true;
+                  }
+                  return false;
+                }
+                """,
+                {"answer": answer, "metadataId": metadata_id},
+            )
+        )
+    except Exception:
+        return False
+
+
+def _visible_workday_dropdown_options(page) -> list[str]:
+    try:
+        values = page.evaluate(
+            r"""
+            () => {
+              const selectors = [
+                '[role="option"]',
+                '[role="menuitem"]',
+                '[data-automation-id="promptOption"]',
+                '[data-automation-label]'
+              ];
+              const seen = new Set();
+              const out = [];
+              for (const element of document.querySelectorAll(selectors.join(','))) {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') {
+                  continue;
+                }
+                const text = (element.getAttribute('data-automation-label') || element.textContent || '')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                if (text && !seen.has(text)) {
+                  seen.add(text);
+                  out.push(text);
+                }
+              }
+              return out.slice(0, 20);
+            }
+            """
+        )
+        return list(values or [])
+    except Exception:
+        return []
+
+
+def _choose_dropdown_answer(page, answer: str, timeout_ms: int, metadata_id: str | None = None) -> bool:
+    escaped = re.escape(answer)
+    candidates = [
+        lambda: page.locator(f"[data-automation-label='{answer}']").last,
+        lambda: page.locator("[data-automation-id='promptOption']").filter(
+            has_text=re.compile(rf"^{escaped}$", re.IGNORECASE)
+        ).last,
+        lambda: page.get_by_role("option", name=re.compile(rf"^{escaped}$", re.IGNORECASE)).first,
+        lambda: page.get_by_role("menuitem", name=re.compile(rf"^{escaped}$", re.IGNORECASE)).first,
+        lambda: page.locator("[role='option'], [role='menuitem'], [data-automation-id='promptOption']").filter(
+            has_text=re.compile(rf"^{escaped}$", re.IGNORECASE)
+        ).last,
+    ]
+    for candidate in candidates:
+        try:
+            locator = candidate()
+            locator.click(timeout=timeout_ms, force=True)
+            if metadata_id is None:
+                return True
+            page.wait_for_timeout(500)
+            if _dropdown_selected_matches(page, metadata_id, answer):
+                return True
+        except Exception:
+            continue
+    try:
+        locator = page.get_by_text(re.compile(rf"^{escaped}$", re.IGNORECASE)).last
+        locator.click(timeout=timeout_ms, force=True)
+        if metadata_id is None:
+            return True
+        page.wait_for_timeout(500)
+        return _dropdown_selected_matches(page, metadata_id, answer)
+    except Exception:
+        return False
 
 
 def _answer_radio_by_question(page, question_pattern: str, answer: str, timeout_ms: int) -> bool:
@@ -1053,6 +1726,9 @@ def _answer_radio_by_question(page, question_pattern: str, answer: str, timeout_
     escaped = re.escape(answer)
     candidates = [
         lambda: container.get_by_role("radio", name=re.compile(rf"^{escaped}$", re.IGNORECASE)).first,
+        lambda: container.locator(
+            f"xpath=.//label[normalize-space()='{answer}']"
+        ).first,
         lambda: container.locator(
             f"label:has-text('{answer}') input[type='radio'], input[type='radio'][aria-label*='{answer}']"
         ).first,
@@ -1065,7 +1741,7 @@ def _answer_radio_by_question(page, question_pattern: str, answer: str, timeout_
             return True
         except Exception:
             continue
-    return False
+    return _click_labeled_input_by_text(page, answer, "radio", timeout_ms)
 
 
 def _normalise_ethnicity(label: str) -> str:
@@ -1075,7 +1751,17 @@ def _normalise_ethnicity(label: str) -> str:
     profile values may use "Asian (United States of America)".  Normalising both
     sides makes matching robust to either spelling.
     """
-    return re.sub(r"[()]", "", label).strip().lower()
+    return re.sub(r"\s+", " ", re.sub(r"[()]", "", label)).strip().lower()
+
+
+def _normalised_label_matches(label: str, target: str) -> bool:
+    label_norm = _normalise_ethnicity(label)
+    target_norm = _normalise_ethnicity(target)
+    return (
+        label_norm == target_norm
+        or label_norm.startswith(f"{target_norm} ")
+        or target_norm in label_norm
+    )
 
 
 def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bool:
@@ -1099,7 +1785,7 @@ def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bo
                 try:
                     lbl = labels.nth(i)
                     lbl_text = _normalise_ethnicity(lbl.inner_text(timeout=500))
-                    if lbl_text == normalised_target:
+                    if _normalised_label_matches(lbl_text, normalised_target):
                         for_id = lbl.get_attribute("for") or ""
                         if for_id:
                             cb = page.locator(f"#{for_id}").first
@@ -1116,6 +1802,10 @@ def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bo
                     continue
     except Exception:
         pass
+
+    if _click_labeled_input_by_text(page, ethnicity_label, "checkbox", timeout_ms):
+        print(f"[auto-apply] Ticked ethnicity checkbox: {ethnicity_label!r}", flush=True)
+        return True
 
     # 2. Fuzzy fallback: get_by_text with normalised label
     try:
@@ -1146,11 +1836,739 @@ def _check_ethnicity_checkbox(page, ethnicity_label: str, timeout_ms: int) -> bo
     return False
 
 
-def _fill_disability_section(page, profile: ApplicationProfile, timeout_ms: int) -> None:
+def _click_labeled_input_by_text(page, label_text: str, input_type: str, timeout_ms: int) -> bool:
+    """Click a radio/checkbox whose visible label matches the desired text."""
+    try:
+        clicked = page.evaluate(
+            r"""
+            ({ labelText, inputType }) => {
+              const norm = (value) => (value || '')
+                .replace(/[()]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+              const target = norm(labelText);
+              const labels = Array.from(document.querySelectorAll('label'));
+              for (const label of labels) {
+                const text = norm(label.textContent);
+                if (!(text === target || text.startsWith(`${target} `) || text.includes(target))) {
+                  continue;
+                }
+                const forId = label.getAttribute('for');
+                const input = label.control
+                  || (forId ? document.getElementById(forId) : null)
+                  || label.querySelector(`input[type="${inputType}"]`);
+                if (!input || input.type !== inputType || input.disabled) {
+                  continue;
+                }
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                if (inputType === 'checkbox' && input.checked) {
+                  return true;
+                }
+                if (inputType === 'radio' && input.checked) {
+                  return true;
+                }
+                input.click();
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+              return false;
+            }
+            """,
+            {"labelText": label_text, "inputType": input_type},
+        )
+        if clicked:
+            page.wait_for_timeout(min(timeout_ms, 500))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _fill_disability_section(page, profile: ApplicationProfile, timeout_ms: int) -> bool:
+    print("[auto-apply] Filling Self Identify required fields.", flush=True)
     _answer_dropdown_by_question(page, r"language", profile.disability_language, timeout_ms)
-    _fill_by_label(page, r"^name\b", profile.applicant_name, timeout_ms)
-    _fill_by_label(page, r"^date\b", profile.today_for_workday(), timeout_ms)
-    _check_by_label(page, profile.disability_status, timeout_ms)
+    name_ok = _fill_by_label(page, r"^name\b", profile.applicant_name, timeout_ms) or _fill_labeled_text_field_by_text(
+        page,
+        "Name",
+        profile.applicant_name,
+        timeout_ms,
+    )
+    print(
+        f"[auto-apply] Self Identify name: {'filled' if name_ok else 'not filled'}.",
+        flush=True,
+    )
+    date_value = profile.today_for_workday()
+    date_ok = (
+        _fill_self_identify_date(page, date_value, timeout_ms)
+        or _fill_by_label(page, r"^date\b", _compact_workday_date(date_value), timeout_ms)
+        or _fill_labeled_text_field_by_text(page, "Date", _compact_workday_date(date_value), timeout_ms)
+    )
+    print(
+        f"[auto-apply] Self Identify date: {'filled' if date_ok else 'not filled'} ({date_value}).",
+        flush=True,
+    )
+    disability_ok = (
+        _check_disability_no_checkbox(page, timeout_ms)
+        or _check_by_label(page, profile.disability_status, min(timeout_ms, 1_500))
+        or _click_labeled_input_by_text(
+            page,
+            profile.disability_status,
+            "checkbox",
+            min(timeout_ms, 1_500),
+        )
+    )
+    print(
+        f"[auto-apply] Self Identify disability status: {'checked' if disability_ok else 'not checked'}.",
+        flush=True,
+    )
+    try:
+        page.keyboard.press("Tab")
+    except Exception:
+        pass
+    try:
+        page.wait_for_timeout(700)
+    except Exception:
+        pass
+
+    if "date" in _missing_self_identify_fields(page, profile):
+        date_ok = _fill_self_identify_date(page, date_value, timeout_ms)
+        print(
+            f"[auto-apply] Self Identify date retry: {'filled' if date_ok else 'not filled'}.",
+            flush=True,
+        )
+    if "disability status" in _missing_self_identify_fields(page, profile):
+        disability_ok = _check_disability_no_checkbox(page, timeout_ms)
+        print(
+            f"[auto-apply] Self Identify disability retry: {'checked' if disability_ok else 'not checked'}.",
+            flush=True,
+        )
+    try:
+        page.wait_for_timeout(700)
+    except Exception:
+        pass
+
+    missing = _missing_self_identify_fields(page, profile)
+    if not missing:
+        print("[auto-apply] Self Identify: all required fields are filled.", flush=True)
+        return True
+    print("[auto-apply] Self Identify still missing: " + ", ".join(missing), flush=True)
+    return False
+
+
+def _fill_self_identify_date(page, value: str, timeout_ms: int) -> bool:
+    """Fill the CC-305 date field, whose Workday date widget is often unlabeled."""
+    compact_value = _compact_workday_date(value)
+    if _fill_segmented_self_identify_date(page, compact_value, timeout_ms):
+        return True
+    if _interactive_fill_self_identify_date(page, compact_value, timeout_ms):
+        return True
+    if _select_self_identify_date_from_picker(page, compact_value, timeout_ms):
+        return True
+
+    try:
+        filled = page.evaluate(
+            r"""
+            ({ value }) => {
+              const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const isEmployeeIdContext = (element) => {
+                let current = element;
+                for (let depth = 0; depth < 4 && current; depth += 1) {
+                  const text = norm(current.textContent);
+                  if (text.includes('employee id') && !/\bdate\b/.test(text)) return true;
+                  current = current.parentElement;
+                }
+                return false;
+              };
+              const setValue = (input, nextValue) => {
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+                if (descriptor?.set) {
+                  descriptor.set.call(input, nextValue);
+                } else {
+                  input.value = nextValue;
+                }
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+              };
+              const candidateInputsNearDateLabel = [];
+              for (const label of document.querySelectorAll('label')) {
+                const text = norm(label.textContent);
+                if (!(text === 'date' || text.startsWith('date '))) {
+                  continue;
+                }
+                const labelRect = label.getBoundingClientRect();
+                const forId = label.getAttribute('for');
+                const controlled = label.control || (forId ? document.getElementById(forId) : null);
+                if (controlled && controlled.tagName === 'INPUT') {
+                  candidateInputsNearDateLabel.push(controlled);
+                }
+                let current = label;
+                for (let depth = 0; depth < 8 && current; depth += 1) {
+                  const input = current.querySelector?.('input:not([type="checkbox"]):not([type="radio"])');
+                  if (input) candidateInputsNearDateLabel.push(input);
+                  current = current.parentElement;
+                }
+                let sibling = label.parentElement?.nextElementSibling;
+                for (let hops = 0; hops < 4 && sibling; hops += 1) {
+                  const input = sibling.querySelector?.('input:not([type="checkbox"]):not([type="radio"])');
+                  if (input) candidateInputsNearDateLabel.push(input);
+                  sibling = sibling.nextElementSibling;
+                }
+              }
+              const placeholderInputs = Array.from(document.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])'))
+                .filter((input) => /m+\s*\/\s*d+\s*\/\s*y+/i.test(input.getAttribute('placeholder') || input.getAttribute('aria-label') || ''));
+              for (const input of [...new Set([...candidateInputsNearDateLabel, ...placeholderInputs])]) {
+                if (input.disabled || input.readOnly) continue;
+                if (!visible(input) || isEmployeeIdContext(input)) continue;
+                setValue(input, value);
+                return true;
+              }
+              return false;
+            }
+            """,
+            {"value": compact_value},
+        )
+        if filled:
+            try:
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(min(timeout_ms, 500))
+            except Exception:
+                pass
+            if _self_identify_date_has_value(page):
+                return True
+            if _select_self_identify_date_from_picker(page, compact_value, timeout_ms):
+                return True
+    except Exception:
+        pass
+
+    for selector in (
+        "input[placeholder*='MM']",
+        "input[aria-label*='Date']",
+        "input[id*='date']",
+        "input[data-automation-id*='date']",
+    ):
+        try:
+            field = page.locator(selector).first
+            if field.count() == 0:
+                continue
+            field.fill(compact_value, timeout=timeout_ms)
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(min(timeout_ms, 500))
+            if _self_identify_date_has_value(page):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _compact_workday_date(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def _fill_segmented_self_identify_date(page, value: str, timeout_ms: int) -> bool:
+    """Fill Workday date controls that expose MM, DD, and YYYY as separate inputs."""
+    match = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", value)
+    if not match:
+        return False
+    month, day, year = match.groups()
+    try:
+        filled = page.evaluate(
+            r"""
+            ({ month, day, year }) => {
+              const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const setValue = (input, nextValue) => {
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                input.focus?.();
+                const proto = input instanceof HTMLTextAreaElement
+                  ? HTMLTextAreaElement.prototype
+                  : HTMLInputElement.prototype;
+                const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (descriptor?.set) {
+                  descriptor.set.call(input, nextValue);
+                } else {
+                  input.value = nextValue;
+                }
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+              };
+              for (const label of document.querySelectorAll('label')) {
+                const text = norm(label.textContent);
+                if (!(text === 'date' || text.startsWith('date '))) {
+                  continue;
+                }
+                const labelRect = label.getBoundingClientRect();
+                const candidates = [];
+                let current = label.parentElement;
+                for (let depth = 0; depth < 7 && current; depth += 1) {
+                  candidates.push(...current.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])'));
+                  current = current.parentElement;
+                }
+                let sibling = label.parentElement?.nextElementSibling;
+                for (let hops = 0; hops < 5 && sibling; hops += 1) {
+                  candidates.push(...sibling.querySelectorAll?.('input:not([type="checkbox"]):not([type="radio"])') || []);
+                  if (sibling.matches?.('input:not([type="checkbox"]):not([type="radio"])')) candidates.push(sibling);
+                  sibling = sibling.nextElementSibling;
+                }
+                const fields = [...new Set(candidates)]
+                  .filter((input) => {
+                    if (!visible(input) || input.disabled || input.readOnly) return false;
+                    const rect = input.getBoundingClientRect();
+                    if (rect.top + rect.height < labelRect.top - 2) return false;
+                    const descriptor = [
+                      input.getAttribute('placeholder'),
+                      input.getAttribute('aria-label'),
+                      input.getAttribute('title'),
+                      input.id,
+                      input.name,
+                      input.getAttribute('data-automation-id')
+                    ].map(norm).join(' ');
+                    return descriptor.includes('mm')
+                      || descriptor.includes('dd')
+                      || descriptor.includes('yyyy')
+                      || descriptor.includes('date');
+                  })
+                  .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                if (fields.length >= 3) {
+                  setValue(fields[0], month);
+                  setValue(fields[1], day);
+                  setValue(fields[2], year);
+                  return true;
+                }
+              }
+              return false;
+            }
+            """,
+            {"month": month, "day": day, "year": year},
+        )
+        if filled:
+            try:
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(min(timeout_ms, 500))
+            except Exception:
+                pass
+            return _self_identify_date_has_value(page)
+    except Exception:
+        pass
+    return False
+
+
+def _interactive_fill_self_identify_date(page, value: str, timeout_ms: int) -> bool:
+    if not _focus_self_identify_date_field(page, timeout_ms):
+        return False
+    try:
+        page.keyboard.press("Control+A")
+        page.keyboard.type(value)
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(700)
+        if _self_identify_date_has_value(page):
+            return True
+    except Exception:
+        pass
+    return _select_self_identify_date_from_picker(page, value, timeout_ms)
+
+
+def _focus_self_identify_date_field(page, timeout_ms: int) -> bool:
+    try:
+        focused = page.evaluate(
+            r"""
+            () => {
+              const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const isEmployeeIdContext = (element) => {
+                let current = element;
+                for (let depth = 0; depth < 4 && current; depth += 1) {
+                  const text = norm(current.textContent);
+                  if (text.includes('employee id') && !/\bdate\b/.test(text)) return true;
+                  current = current.parentElement;
+                }
+                return false;
+              };
+              const interactiveSelector = [
+                'input:not([type="checkbox"]):not([type="radio"])',
+                '[role="textbox"]',
+                '[contenteditable="true"]',
+                '[data-automation-id*="date"]',
+                'button[aria-label*="calendar" i]',
+                'button[aria-label*="date" i]'
+              ].join(',');
+              for (const label of document.querySelectorAll('label')) {
+                const text = norm(label.textContent);
+                if (!(text === 'date' || text.startsWith('date '))) {
+                  continue;
+                }
+                const labelRect = label.getBoundingClientRect();
+                const candidates = [];
+                const forId = label.getAttribute('for');
+                const controlled = label.control || (forId ? document.getElementById(forId) : null);
+                if (controlled) candidates.push(controlled);
+
+                let current = label.parentElement;
+                for (let depth = 0; depth < 7 && current; depth += 1) {
+                  candidates.push(...current.querySelectorAll(interactiveSelector));
+                  current = current.parentElement;
+                }
+
+                let sibling = label.parentElement?.nextElementSibling;
+                for (let hops = 0; hops < 5 && sibling; hops += 1) {
+                  candidates.push(...sibling.querySelectorAll(interactiveSelector));
+                  if (sibling.matches?.(interactiveSelector)) candidates.push(sibling);
+                  sibling = sibling.nextElementSibling;
+                }
+
+                const unique = [...new Set(candidates)].filter((candidate) => {
+                  if (!visible(candidate) || candidate.disabled || candidate.readOnly) return false;
+                  if (isEmployeeIdContext(candidate)) return false;
+                  const rect = candidate.getBoundingClientRect();
+                  if (rect.top + rect.height < labelRect.top - 2) return false;
+                  const descriptor = [
+                    candidate.getAttribute('placeholder'),
+                    candidate.getAttribute('aria-label'),
+                    candidate.getAttribute('title'),
+                    candidate.id,
+                    candidate.name,
+                    candidate.getAttribute('data-automation-id'),
+                    candidate.textContent
+                  ].map(norm).join(' ');
+                  return /m+\s*\/\s*d+\s*\/\s*y+/.test(descriptor)
+                    || /\bdate\b/.test(descriptor)
+                    || descriptor.includes('calendar');
+                }).sort((a, b) => {
+                  const aTag = (a.tagName || '').toLowerCase();
+                  const bTag = (b.tagName || '').toLowerCase();
+                  const aText = a.matches?.('input, textarea, [role="textbox"], [contenteditable="true"]') ? 0 : 1;
+                  const bText = b.matches?.('input, textarea, [role="textbox"], [contenteditable="true"]') ? 0 : 1;
+                  if (aText !== bText) return aText - bText;
+                  if (aTag !== bTag) return aTag.localeCompare(bTag);
+                  return a.getBoundingClientRect().left - b.getBoundingClientRect().left;
+                });
+                const target = unique[0];
+                if (!target) {
+                  continue;
+                }
+                target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                target.click();
+                target.focus?.();
+                return true;
+              }
+              return false;
+            }
+            """
+        )
+        if focused:
+            page.wait_for_timeout(min(timeout_ms, 500))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _select_self_identify_date_from_picker(page, value: str, timeout_ms: int) -> bool:
+    match = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", value)
+    if not match:
+        return False
+    month, day, year = match.groups()
+    mmdd = f"{month}{day}"
+    month_number = str(int(month))
+    selectors = [
+        (
+            "button[data-automation-id='datePickerDay']"
+            f"[data-uxi-datepicker-year='{year}']"
+            f"[data-uxi-datepicker-month='{month_number}']"
+            f"[data-uxi-datepicker-mmdd='{mmdd}']"
+        ),
+        (
+            "button[data-automation-id='datePickerSelectedToday']"
+            f"[data-uxi-datepicker-year='{year}']"
+            f"[data-uxi-datepicker-mmdd='{mmdd}']"
+        ),
+        "button[data-automation-id='datePickerSelectedToday']",
+    ]
+
+    for _ in range(2):
+        for selector in selectors:
+            try:
+                button = page.locator(selector).first
+                if button.count() == 0:
+                    continue
+                button.click(timeout=timeout_ms, force=True)
+                page.wait_for_timeout(700)
+                try:
+                    page.keyboard.press("Tab")
+                    page.wait_for_timeout(300)
+                except Exception:
+                    pass
+                if _self_identify_date_has_value(page):
+                    return True
+            except Exception:
+                continue
+        if not _focus_self_identify_date_field(page, timeout_ms):
+            break
+    return False
+
+
+def _self_identify_date_has_value(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                r"""
+                () => {
+                  const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                  const visible = (element) => {
+                    if (!element) return false;
+                    const rect = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                  };
+                  const hasRealDate = (value) => {
+                    const text = norm(value);
+                    return /\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4}/.test(text)
+                      && !text.includes('mm')
+                      && !text.includes('yyyy');
+                  };
+                  const dateFieldText = [];
+                  for (const label of document.querySelectorAll('label')) {
+                    const text = norm(label.textContent);
+                    if (!(text === 'date' || text.startsWith('date '))) {
+                      continue;
+                    }
+                    const forId = label.getAttribute('for');
+                    const controlled = label.control || (forId ? document.getElementById(forId) : null);
+                    if (controlled) {
+                      dateFieldText.push(controlled.value, controlled.textContent, controlled.getAttribute('aria-label'));
+                    }
+                    let current = label.parentElement;
+                    for (let depth = 0; depth < 7 && current; depth += 1) {
+                      if (visible(current)) {
+                        dateFieldText.push(current.textContent);
+                      }
+                      for (const input of current.querySelectorAll('input:not([type="checkbox"]):not([type="radio"]), [role="textbox"]')) {
+                        dateFieldText.push(input.value, input.textContent, input.getAttribute('aria-label'), input.getAttribute('aria-valuetext'));
+                      }
+                      current = current.parentElement;
+                    }
+                    let sibling = label.parentElement?.nextElementSibling;
+                    for (let hops = 0; hops < 5 && sibling; hops += 1) {
+                      if (visible(sibling)) {
+                        dateFieldText.push(sibling.textContent);
+                      }
+                      for (const input of sibling.querySelectorAll?.('input:not([type="checkbox"]):not([type="radio"]), [role="textbox"]') || []) {
+                        dateFieldText.push(input.value, input.textContent, input.getAttribute('aria-label'), input.getAttribute('aria-valuetext'));
+                      }
+                      sibling = sibling.nextElementSibling;
+                    }
+                  }
+                  return dateFieldText.some(hasRealDate);
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _check_disability_no_checkbox(page, timeout_ms: int) -> bool:
+    try:
+        checked = page.evaluate(
+            r"""
+            () => {
+              const norm = (value) => (value || '')
+                .replace(/[()]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+              const target = 'no, i do not have a disability';
+              const labels = Array.from(document.querySelectorAll(
+                '[data-automation-id="checkbox"] label, label'
+              ));
+              for (const label of labels) {
+                if (!norm(label.textContent).includes(norm(target))) {
+                  continue;
+                }
+                const root = label.closest('[data-automation-id="checkbox"]') || label.parentElement;
+                const forId = label.getAttribute('for');
+                const input = (forId ? document.getElementById(forId) : null)
+                  || root?.querySelector('input[type="checkbox"]');
+                if (!input || input.type !== 'checkbox' || input.disabled) {
+                  continue;
+                }
+                if (input.checked || root?.getAttribute('data-automationcheckboxchecked') === 'true') {
+                  return true;
+                }
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                input.click();
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+              return false;
+            }
+            """
+        )
+        if checked:
+            page.wait_for_timeout(min(timeout_ms, 150))
+            return True
+    except Exception:
+        pass
+
+    return _click_labeled_input_by_text(
+        page,
+        "No, I do not have a disability",
+        "checkbox",
+        min(timeout_ms, 1_000),
+    )
+
+
+def _fill_labeled_text_field_by_text(page, label_text: str, value: str, timeout_ms: int) -> bool:
+    try:
+        filled = page.evaluate(
+            r"""
+            ({ labelText, value }) => {
+              const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const target = norm(labelText);
+              const setValue = (input, nextValue) => {
+                input.scrollIntoView({ block: 'center', inline: 'nearest' });
+                const proto = input instanceof HTMLTextAreaElement
+                  ? HTMLTextAreaElement.prototype
+                  : HTMLInputElement.prototype;
+                const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (descriptor?.set) {
+                  descriptor.set.call(input, nextValue);
+                } else {
+                  input.value = nextValue;
+                }
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+              };
+              for (const label of document.querySelectorAll('label')) {
+                const text = norm(label.textContent);
+                if (!(text === target || text.startsWith(`${target} `))) {
+                  continue;
+                }
+                const forId = label.getAttribute('for');
+                let input = label.control || (forId ? document.getElementById(forId) : null);
+                if (!input) {
+                  const container = label.closest('li, [data-automation-id="formLabelRequired"], [data-automation-id="decorationWrapper"], div');
+                  input = container?.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea');
+                }
+                if (!input || input.disabled) {
+                  continue;
+                }
+                setValue(input, value);
+                return true;
+              }
+              return false;
+            }
+            """,
+            {"labelText": label_text, "value": value},
+        )
+        if filled:
+            page.wait_for_timeout(min(timeout_ms, 500))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _missing_self_identify_fields(page, profile: ApplicationProfile) -> list[str]:
+    try:
+        return page.evaluate(
+            r"""
+            ({ name, disabilityStatus }) => {
+              const norm = (input) => (input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              const isTextInput = (input) => input && !['checkbox', 'radio'].includes((input.type || '').toLowerCase());
+              const findInputByLabel = (labelText) => {
+                const target = norm(labelText);
+                for (const label of document.querySelectorAll('label')) {
+                  const text = norm(label.textContent);
+                  if (!(text === target || text.startsWith(`${target} `))) {
+                    continue;
+                  }
+                  const forId = label.getAttribute('for');
+                  let input = label.control || (forId ? document.getElementById(forId) : null);
+                  if (!input) {
+                    const container = label.closest('li, [data-automation-id="formLabelRequired"], [data-automation-id="decorationWrapper"], div');
+                    input = container?.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea');
+                  }
+                  if (input) return input;
+                }
+                return null;
+              };
+              const findDateInput = () => {
+                const labelled = findInputByLabel('Date');
+                if (isTextInput(labelled)) {
+                  return labelled;
+                }
+                const dateLike = Array.from(document.querySelectorAll('input'))
+                  .find((input) => {
+                    if (!isTextInput(input)) return false;
+                    const descriptor = [
+                      input.getAttribute('placeholder'),
+                      input.getAttribute('aria-label'),
+                      input.getAttribute('title'),
+                      input.id,
+                      input.name,
+                      input.getAttribute('data-automation-id')
+                    ].map(norm).join(' ');
+                    return /m+\s*\/\s*d+\s*\/\s*y+/.test(descriptor) || /\bdate\b/.test(descriptor);
+                  });
+                return dateLike || null;
+              };
+              const checkboxCheckedByLabel = (labelText) => {
+                const target = norm(labelText);
+                for (const label of document.querySelectorAll('label')) {
+                  const text = norm(label.textContent);
+                  if (!text.includes(target)) {
+                    continue;
+                  }
+                  const forId = label.getAttribute('for');
+                  const input = label.control || (forId ? document.getElementById(forId) : null);
+                  if (input?.type === 'checkbox' && input.checked) {
+                    return true;
+                  }
+                }
+                return false;
+              };
+              const missing = [];
+              const nameInput = findInputByLabel('Name');
+              if (!nameInput || !norm(nameInput.value).includes(norm(name))) {
+                missing.push('name');
+              }
+              const dateInput = findDateInput();
+              if (!dateInput || !norm(dateInput.value)) {
+                missing.push('date');
+              }
+              if (!checkboxCheckedByLabel(disabilityStatus) && !checkboxCheckedByLabel('No, I do not have a disability')) {
+                missing.push('disability status');
+              }
+              return missing;
+            }
+            """,
+            {"name": profile.applicant_name, "disabilityStatus": profile.disability_status},
+        )
+    except Exception:
+        return ["unable to verify fields"]
 
 
 def _fill_by_label(page, label_pattern: str, value: str, timeout_ms: int) -> bool:
@@ -1186,8 +2604,46 @@ def _check_review_signature(page, timeout_ms: int) -> bool:
 
 def _looks_like_review_page(text: str) -> bool:
     lowered = text.lower()
+    if _has_voluntary_disclosure_content(lowered):
+        return False
     return "legal equivalent of a signature" in lowered or (
         "review" in lowered and "submit" in lowered and "terms" in lowered
+    )
+
+
+def _has_quick_apply_content(body_text: str) -> bool:
+    return (
+        "drop file here" in body_text
+        or "select files" in body_text
+        or "quick apply resume" in body_text
+        or "upload either doc" in body_text
+    )
+
+
+def _has_application_questions_content(body_text: str) -> bool:
+    return (
+        "eligible to work in the united states" in body_text
+        or "enrolled in class(es) at asu" in body_text
+        or "federal work study" in body_text
+        or "federal work-study" in body_text
+        or "18 years or older" in body_text
+    )
+
+
+def _has_voluntary_disclosure_content(body_text: str) -> bool:
+    return (
+        "hispanic or latino" in body_text
+        or "ethnicity which most accurately" in body_text
+        or "select your gender" in body_text
+        or "veteran status" in body_text
+    )
+
+
+def _has_disability_self_id_content(body_text: str) -> bool:
+    return (
+        "voluntary self-identification of disability" in body_text
+        or "cc-305" in body_text
+        or "omb control number" in body_text
     )
 
 

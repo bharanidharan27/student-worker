@@ -222,7 +222,11 @@ def mark_status(
     return True, f"Marked job {job_id} as {status}."
 
 
-def next_job_id(db_path: Path = DEFAULT_DB_PATH, min_score: int = 0, fit_label: str = "") -> int | None:
+def next_job_id(
+    db_path: Path = DEFAULT_DB_PATH,
+    min_score: int = 0,
+    fit_label: str = "",
+) -> int | None:
     rows = list_apply_queue(db_path=db_path, limit=50)
     for row in rows:
         if (row["fit_score"] or 0) < min_score:
@@ -235,6 +239,14 @@ def next_job_id(db_path: Path = DEFAULT_DB_PATH, min_score: int = 0, fit_label: 
 
 def _run_auto_apply_for_job_id(args, job_id: int) -> int:
     application_profile = ApplicationProfile(applicant_name=args.applicant_name)
+    row = get_job_by_id(job_id, db_path=args.db_path)
+    if row is not None:
+        print(
+            "Auto-applying job "
+            f"{job_id}: {row['title']} ({row['workday_id']}) "
+            f"| status={row['status']} | fit={row['fit_score']}",
+            flush=True,
+        )
     result = auto_apply_job(
         job_id,
         db_path=args.db_path,

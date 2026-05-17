@@ -8,6 +8,7 @@ from src.apply_automation import (
     _current_section_label,
     _extract_applied_marker,
     _fill_known_section,
+    _go_to_quick_apply_section,
     _looks_like_later_step,
     _looks_like_review_page,
     _resume_already_uploaded,
@@ -138,9 +139,16 @@ def test_application_profile_defaults_match_known_fixed_answers() -> None:
 
 def test_review_detection_does_not_match_sidebar_only_text() -> None:
     quick_apply_text = "Quick Apply My Experience Application Questions Review Your job application will be saved."
+    voluntary_text = (
+        "Are you of Hispanic or Latino descent? Please select the ethnicity which"
+        " most accurately describes how you identify yourself. Please select your"
+        " gender. I understand that checking this box is the legal equivalent of"
+        " a signature accepting the terms above."
+    )
     review_text = "Review I understand that checking this box is the legal equivalent of a signature accepting the terms above."
 
     assert _looks_like_review_page(quick_apply_text) is False
+    assert _looks_like_review_page(voluntary_text) is False
     assert _looks_like_review_page(review_text) is True
 
 
@@ -170,9 +178,9 @@ def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:
     assert _resume_already_uploaded(FakePage(), resume_path) is True
 
 
-def test_my_experience_is_not_a_manual_advance_section() -> None:
-    """My Experience is auto-advanced — the tool clicks Next, nothing else."""
-    assert "my experience" not in MANUAL_ADVANCE_SECTIONS
+def test_my_experience_is_a_manual_advance_section() -> None:
+    """My Experience is a deliberate handoff before the tool clicks Next."""
+    assert "my experience" in MANUAL_ADVANCE_SECTIONS
 
 
 def test_current_section_label_recognises_workday_steps() -> None:
@@ -242,11 +250,81 @@ def test_current_section_label_uses_page_heading_to_beat_sidebar() -> None:
         heading="My Experience",
         body=(
             "Quick Apply My Experience Application Questions Voluntary"
-            " Disclosures Self Identify Review"
+            " Disclosures Self Identify Review Are you of Hispanic or Latino"
+            " descent? Please select your gender."
         ),
     )
     assert _current_section_label(page) == "my experience"
+    quick_apply_page = HeadingPage(
+        heading="Quick Apply",
+        body=(
+            "Quick Apply Drop file here Select files Are you of Hispanic or"
+            " Latino descent? Please select your gender."
+        ),
+    )
+    assert _current_section_label(quick_apply_page) == "quick apply"
     assert _current_section_label("Random unrelated text") is None
+
+
+def test_current_section_label_keeps_terms_inside_voluntary_disclosures() -> None:
+    """Terms/signature text can live inside Voluntary Disclosures."""
+
+    class VoluntaryPage:
+        def locator(self, selector: str):
+            class _Match:
+                first = property(lambda self: self)
+
+                def count(self_inner) -> int:
+                    if selector == "body":
+                        return 1
+                    if selector == "[data-metadata-id='radioButtonSelectList.hispanicOrLatino']":
+                        return 1
+                    return 0
+
+                def inner_text(self_inner, timeout: int) -> str:
+                    if selector == "body":
+                        return (
+                            "Section Title Voluntary Personal Information "
+                            "Are you of Hispanic or Latino descent? "
+                            "Please select the ethnicity which most accurately "
+                            "describes how you identify yourself. "
+                            "Please select your gender. Terms and Conditions "
+                            "I understand that checking this box is the legal "
+                            "equivalent of a signature accepting the terms above."
+                        )
+                    return ""
+
+                def nth(self_inner, _index: int):
+                    return self_inner
+
+            return _Match()
+
+    assert _current_section_label(VoluntaryPage()) == "voluntary disclosures"
+
+
+def test_current_section_label_ignores_stale_voluntary_text_without_controls() -> None:
+    class StaleVoluntaryPage:
+        def locator(self, selector: str):
+            class _Locator:
+                first = property(lambda self: self)
+
+                def count(self) -> int:
+                    return 1 if selector == "body" else 0
+
+                def inner_text(self, timeout: int) -> str:
+                    if selector == "body":
+                        return (
+                            "Voluntary Disclosures Are you of Hispanic or Latino "
+                            "descent? Please select your gender."
+                        )
+                    return ""
+
+                def nth(self, _index: int):
+                    return self
+
+            return _Locator()
+
+    assert _current_section_label(StaleVoluntaryPage()) is None
 
 
 def test_current_section_label_detects_quick_apply_without_heading() -> None:
@@ -291,6 +369,15 @@ def test_current_section_label_detects_quick_apply_without_heading() -> None:
         body="Quick Apply Please Read Drop file here Select files",
     )
     assert _current_section_label(page) == "quick apply"
+
+    page_with_stale_voluntary_text = FileInputPage(
+        has_file_input=True,
+        body=(
+            "Are you of Hispanic or Latino descent? "
+            "Please select your gender."
+        ),
+    )
+    assert _current_section_label(page_with_stale_voluntary_text) == "quick apply"
 
     # Same input without the file input: no detection — caller should pause.
     page2 = FileInputPage(
@@ -370,6 +457,65 @@ def _job_with_resume(resume_path: Path):
         fit_score=90,
         fit_label="Strong Fit",
     )
+
+
+def test_go_to_quick_apply_section_clicks_left_nav_first() -> None:
+    class QuickApplyNavPage:
+        def __init__(self):
+            self.section = "my experience"
+            self.clicked_quick_apply = False
+
+        def locator(self, selector: str):
+            outer = self
+
+            class Match:
+                first = property(lambda self: self)
+
+                def count(self) -> int:
+                    if selector == "input[type='file']":
+                        return 1 if outer.section == "quick apply" else 0
+                    if selector in {"body", "h1", "h2", "main h1", "main h2"}:
+                        return 1
+                    return 0
+
+                def inner_text(self, timeout: int) -> str:
+                    if outer.section == "quick apply":
+                        return "Quick Apply Drop file here Select files"
+                    return "My Experience Work Experience Education"
+
+                def nth(self, _index: int):
+                    return self
+
+            return Match()
+
+        def get_by_role(self, role, name=None):
+            return self._quick_apply_clicker()
+
+        def get_by_text(self, text):
+            return self._quick_apply_clicker()
+
+        def _quick_apply_clicker(self):
+            outer = self
+
+            class Clicker:
+                first = property(lambda self: self)
+                last = property(lambda self: self)
+
+                def click(self, timeout: int, force: bool = False) -> None:
+                    outer.clicked_quick_apply = True
+                    outer.section = "quick apply"
+
+            return Clicker()
+
+        def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+    page = QuickApplyNavPage()
+
+    assert _current_section_label(page) == "my experience"
+    assert _go_to_quick_apply_section(page, timeout_ms=1_000) is True
+    assert page.clicked_quick_apply is True
+    assert _current_section_label(page) == "quick apply"
 
 
 class _ResumeUploadFakePage:
@@ -523,6 +669,30 @@ def test_my_experience_does_not_re_upload_or_remove(tmp_path: Path) -> None:
     assert page.remove_button_clicks == 0, "Remove buttons must not be clicked on My Experience"
 
 
+def test_unknown_section_does_not_treat_stale_voluntary_text_as_active_page(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    page = _ResumeUploadFakePage(
+        body_text=(
+            "Bharanidharan_Resume.pdf "
+            "Are you of Hispanic or Latino descent? Please select your gender."
+        ),
+        file_input_count=0,
+    )
+
+    result = _fill_known_section(
+        page,
+        _job_with_resume(resume_path),
+        ApplicationProfile(),
+        timeout_ms=1_000,
+        section_label=None,
+    )
+
+    assert result.ok is True
+    assert page.set_input_files_calls == []
+
+
 def test_quick_apply_step_uploads_only_when_no_existing_resume(tmp_path: Path) -> None:
     resume_path = tmp_path / "Bharanidharan_Resume.pdf"
     resume_path.write_text("resume", encoding="utf-8")
@@ -571,7 +741,7 @@ def test_upload_resume_skips_when_attachment_indicator_present(
 
     page = _ResumeUploadFakePage(
         body_text="Quick Apply Bharanidharan_Resume.pdf attached",
-        attached_selector="[data-automation-id='delete-file']",
+        attached_selector="[data-automation-id='file-uploaded']",
     )
 
     assert _upload_resume(page, resume_path, timeout_ms=1_000) is True
@@ -579,15 +749,10 @@ def test_upload_resume_skips_when_attachment_indicator_present(
     assert page.remove_button_clicks == 0
 
 
-def test_quick_apply_section_fails_loud_when_attachment_chip_never_appears(
+def test_quick_apply_section_blocks_when_attachment_chip_never_appears(
     tmp_path: Path,
 ) -> None:
-    """Quick Apply must NOT advance unless the attachment chip appears.
-
-    Regression for the bug where the tool clicked Next on Quick Apply
-    even though the resume never actually attached, leaving the
-    application empty.
-    """
+    """Quick Apply must not advance unless Workday confirms the attachment."""
     resume_path = tmp_path / "Bharanidharan_Resume.pdf"
     resume_path.write_text("resume", encoding="utf-8")
 
@@ -601,8 +766,7 @@ def test_quick_apply_section_fails_loud_when_attachment_chip_never_appears(
     result = _fill_known_section(page, job, profile, timeout_ms=200)
 
     assert result.ok is False
-    assert "attachment indicator" in (result.message or "")
-    # File input was set, but flow halts before any Next click.
+    assert "did not confirm the attachment" in (result.message or "")
     assert page.set_input_files_calls == [str(resume_path)]
 
 
