@@ -175,7 +175,7 @@ python -m src.apply_cli --mark-skipped 5 --note "Not interested"
 
 (These status commands still take a numeric id from `--queue`. They are bookkeeping only and do not start an application.)
 
-Auto-apply fills the fixed Workday sections shown in the current ASU flow: work authorization, ASU enrollment, federal work study, age 18+, Hispanic/Latino disclosure, disability self-identification, and the review signature checkbox. It uses the recommended resume PDF for upload and the resume parser for experience fields.
+Auto-apply fills the fixed Workday sections shown in the current ASU flow: work authorization, ASU enrollment, federal work study, age 18+, Hispanic/Latino disclosure, and disability self-identification. It uses the recommended resume PDF for upload and the resume parser for experience fields.
 
 ### Manual handoff on My Experience
 
@@ -185,7 +185,7 @@ Workday's `My Experience` page contains required dropdowns the resume parser can
 2. Pick the missing dropdowns Workday flags as required.
 3. Click `Save and Continue` yourself.
 
-The terminal prints a `[auto-apply] Paused on 'my experience'` message while it waits. As soon as Workday navigates past `My Experience`, the tool resumes and auto-fills `Application Questions`, `Voluntary Disclosures`, `Self Identify`, and the `Review` signature checkbox. With `--submit`, it then clicks the final `Submit`. The pause times out after 15 minutes and marks the job as `reviewing`.
+The terminal prints a `[auto-apply] Paused on 'my experience'` message while it waits. As soon as Workday navigates past `My Experience`, the tool resumes and auto-fills `Application Questions`, `Voluntary Disclosures`, and `Self Identify`. On `Review`, it stops unless `--submit` is provided; with `--submit`, it clicks the final `Submit`. The pause times out after 15 minutes and marks the job as `reviewing`.
 
 Allow final submit only when Workday does not show required-field blockers:
 

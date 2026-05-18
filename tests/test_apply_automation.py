@@ -518,6 +518,56 @@ def test_go_to_quick_apply_section_clicks_left_nav_first() -> None:
     assert _current_section_label(page) == "quick apply"
 
 
+def test_review_section_does_not_require_signature_checkbox(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+
+    class ReviewPage:
+        def __init__(self):
+            self.get_by_text_calls = 0
+
+        def locator(self, selector: str):
+            class Match:
+                first = property(lambda self: self)
+
+                def count(self) -> int:
+                    return 1 if selector == "body" else 0
+
+                def inner_text(self, timeout: int) -> str:
+                    return "Review Submit"
+
+                def nth(self, _index: int):
+                    return self
+
+            return Match()
+
+        def get_by_text(self, text):
+            self.get_by_text_calls += 1
+
+            class Empty:
+                first = property(lambda self: self)
+
+                def locator(self, selector: str):
+                    return self
+
+                def click(self, timeout: int):
+                    return None
+
+            return Empty()
+
+    page = ReviewPage()
+    result = _fill_known_section(
+        page,
+        _job_with_resume(resume_path),
+        ApplicationProfile(),
+        timeout_ms=1_000,
+        section_label="review",
+    )
+
+    assert result.ok is True
+    assert page.get_by_text_calls == 0
+
+
 class _ResumeUploadFakePage:
     """Test double that records every Workday locator + click interaction.
 
