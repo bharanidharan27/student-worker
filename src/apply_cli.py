@@ -324,12 +324,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--auto-apply-next",
         action="store_true",
-        help="Auto-apply the top-ranked Strong Fit job. The simplest one-shot option.",
+        help="Auto-apply the top-ranked job at or above the minimum score.",
     )
     parser.add_argument(
         "--auto-apply-queue",
         action="store_true",
-        help="Auto-apply filtered queue jobs. Defaults to Strong Fit with score >= 70.",
+        help="Auto-apply filtered queue jobs. Defaults to any fit label with score >= 70.",
     )
     parser.add_argument(
         "--submit",
@@ -349,8 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--fit-label",
-        default="Strong Fit",
-        help="Fit label filter for --auto-apply-queue. Use an empty string to disable.",
+        default="",
+        help="Optional fit label filter for auto-apply. Example: 'Strong Fit'.",
     )
     parser.add_argument("--mark-reviewing", type=int, metavar="JOB_ID", help="Mark a job as reviewing.")
     parser.add_argument("--mark-applied", type=int, metavar="JOB_ID", help="Mark a job as applied.")
