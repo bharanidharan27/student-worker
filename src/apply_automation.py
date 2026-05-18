@@ -103,7 +103,7 @@ def auto_apply_queue(
     db_path: Path = DEFAULT_DB_PATH,
     auth_state_path: Path = DEFAULT_AUTH_STATE_PATH,
     limit: int = 10,
-    min_score: int = 80,
+    min_score: int = 70,
     fit_label: str = "Strong Fit",
     submit: bool = False,
     headed: bool = True,
