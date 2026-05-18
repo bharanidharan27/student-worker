@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--auto-apply-queue",
         action="store_true",
-        help="Auto-apply filtered queue jobs. Defaults to Strong Fit with score >= 80.",
+        help="Auto-apply filtered queue jobs. Defaults to Strong Fit with score >= 70.",
     )
     parser.add_argument(
         "--submit",
@@ -344,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--min-score",
         type=int,
-        default=80,
+        default=70,
         help="Minimum fit score for --auto-apply-queue.",
     )
     parser.add_argument(

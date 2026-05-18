@@ -387,7 +387,7 @@ def test_auto_apply_url_runs_for_matched_job(monkeypatch, tmp_path: Path) -> Non
 def test_auto_apply_next_chooses_next_best_job(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.sqlite"
     upsert_job(_job("JR-possible", "Possible Job", 99, "Possible Fit"), db_path)
-    strong_id = upsert_job(_job("JR-strong", "Strong Job", 90, "Strong Fit"), db_path)
+    strong_id = upsert_job(_job("JR-strong", "Strong Job", 75, "Strong Fit"), db_path)
     calls = []
 
     def fake_auto_apply_job(
