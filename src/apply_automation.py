@@ -604,21 +604,6 @@ def _complete_application_flow(
 
         body_text = _safe_body_text(page)
         if section_label == "review" or _looks_like_review_page(body_text):
-            if not _check_review_signature(page, timeout_ms):
-                print(
-                    "[auto-apply] Paused on 'review': could not find the signature"
-                    " checkbox automatically. Please tick 'I agree' / 'legal"
-                    " equivalent of a signature' and click Submit."
-                    " The tool will resume automatically.",
-                    flush=True,
-                )
-                advanced = _wait_for_user_to_advance(page, "review")
-                if not advanced:
-                    return AutoApplyResult(job.id, False, False, True, "Review signature checkbox was not found.")
-                page.wait_for_timeout(1_000)
-                last_section_label = None
-                repeated_section_count = 0
-                continue
             if not submit:
                 _write_debug_dump(page, debug_dump_dir, job.id, "filled_review_not_submitted")
                 return AutoApplyResult(
@@ -795,7 +780,6 @@ def _fill_known_section(
         return SectionResult(True)
 
     if section_label == "review" or _looks_like_review_page(body_text):
-        _check_review_signature(page, timeout_ms)
         return SectionResult(True)
 
     return SectionResult(True)
