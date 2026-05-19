@@ -182,6 +182,9 @@ def _run_playwright_apply(
             "and `playwright install` first."
         ) from exc
 
+    def finish(result: AutoApplyResult, page) -> AutoApplyResult:
+        return _hold_browser_open_for_review(page, result) if headed and result.needs_review else result
+
     keep_open_for_review = headed
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
@@ -200,12 +203,15 @@ def _run_playwright_apply(
 
             page_text = _safe_body_text(page)
             if not evaluate_session_page(page.url, page_text):
-                return AutoApplyResult(
-                    job.id,
-                    False,
-                    False,
-                    True,
-                    "Saved Workday session appears expired. Run `python -m src.auth.login_capture`.",
+                return finish(
+                    AutoApplyResult(
+                        job.id,
+                        False,
+                        False,
+                        True,
+                        "Saved Workday session appears expired. Run `python -m src.auth.login_capture`.",
+                    ),
+                    page,
                 )
 
             if _open_selected_job_from_results(page, job, timeout_ms):
@@ -240,7 +246,7 @@ def _run_playwright_apply(
                         result = _complete_application_flow(page, job, profile, submit, timeout_ms, debug_dump_dir)
                         if result.needs_review:
                             _write_debug_dump(page, debug_dump_dir, job.id, "needs_review")
-                        return result
+                        return finish(result, page)
 
                 applied_marker = _extract_applied_marker(_safe_body_text(page))
                 if applied_marker:
@@ -252,13 +258,16 @@ def _run_playwright_apply(
                         f"Job was already applied in Workday: {applied_marker}.",
                     )
                 _write_debug_dump(page, debug_dump_dir, job.id, "apply_button_not_found")
-                return AutoApplyResult(job.id, False, False, True, "Apply button was not found.")
+                return finish(
+                    AutoApplyResult(job.id, False, False, True, "Apply button was not found."),
+                    page,
+                )
 
             page.wait_for_timeout(1_000)
             result = _complete_application_flow(page, job, profile, submit, timeout_ms, debug_dump_dir)
             if result.needs_review:
                 _write_debug_dump(page, debug_dump_dir, job.id, "needs_review")
-            return result
+            return finish(result, page)
         finally:
             if not keep_open_for_review:
                 browser.close()
@@ -274,6 +283,63 @@ class SubmitResult:
 class SectionResult:
     ok: bool
     message: str | None = None
+
+
+def _hold_browser_open_for_review(
+    page,
+    result: AutoApplyResult,
+    input_func: Callable[[str], str] = input,
+) -> AutoApplyResult:
+    """Keep headed Playwright sessions alive while the user reviews Workday."""
+
+    print(
+        "[auto-apply] Browser is staying open for manual review. "
+        "Submit in Workday if ready, then press Enter in this terminal.",
+        flush=True,
+    )
+    try:
+        input_func("[auto-apply] Press Enter after you are done in the browser...")
+    except EOFError:
+        return result
+
+    try:
+        page.wait_for_timeout(1_000)
+    except Exception:
+        pass
+
+    body_text = _safe_body_text(page)
+    applied_marker = _extract_applied_marker(body_text)
+    if applied_marker:
+        return AutoApplyResult(
+            result.job_id,
+            True,
+            True,
+            False,
+            f"Job was submitted/applied in Workday: {applied_marker}.",
+        )
+    if _looks_like_manual_submission_confirmation(body_text):
+        return AutoApplyResult(
+            result.job_id,
+            True,
+            True,
+            False,
+            "Application appears submitted in Workday after manual review.",
+        )
+
+    return result
+
+
+def _looks_like_manual_submission_confirmation(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "application submitted",
+            "application has been submitted",
+            "successfully submitted",
+            "thank you for applying",
+        )
+    )
 
 
 # Sections where the user must manually verify or complete fields before the
