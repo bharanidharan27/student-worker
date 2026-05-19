@@ -9,6 +9,8 @@ from src.apply_automation import (
     _extract_applied_marker,
     _fill_known_section,
     _go_to_quick_apply_section,
+    _hold_browser_open_for_review,
+    _looks_like_manual_submission_confirmation,
     _looks_like_later_step,
     _looks_like_review_page,
     _resume_already_uploaded,
@@ -162,6 +164,57 @@ def test_extract_applied_marker_accepts_lowercase_ui_text() -> None:
     text = "Tech Devil Consultant applied 04/30/2026, 1:08 PM Job Details"
 
     assert _extract_applied_marker(text) == "applied 04/30/2026, 1:08 PM"
+
+
+def test_manual_submission_confirmation_detection() -> None:
+    assert _looks_like_manual_submission_confirmation("Your application has been submitted.")
+    assert not _looks_like_manual_submission_confirmation("Review Submit Terms")
+
+
+def test_hold_browser_open_for_review_waits_and_preserves_review_result() -> None:
+    class FakePage:
+        def __init__(self):
+            self.waited = False
+
+        def wait_for_timeout(self, ms: int) -> None:
+            self.waited = True
+
+        def locator(self, selector: str):
+            class Body:
+                def inner_text(self, timeout: int) -> str:
+                    return "Review Submit Terms"
+
+            return Body()
+
+    prompts: list[str] = []
+    result = AutoApplyResult(10, True, False, True, "Ready for review.")
+    page = FakePage()
+
+    held = _hold_browser_open_for_review(page, result, input_func=lambda prompt: prompts.append(prompt) or "")
+
+    assert held == result
+    assert page.waited is True
+    assert prompts
+
+
+def test_hold_browser_open_for_review_marks_manual_submit_when_confirmed() -> None:
+    class FakePage:
+        def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+        def locator(self, selector: str):
+            class Body:
+                def inner_text(self, timeout: int) -> str:
+                    return "Thank you for applying. Your application has been submitted."
+
+            return Body()
+
+    result = AutoApplyResult(10, True, False, True, "Ready for review.")
+
+    held = _hold_browser_open_for_review(FakePage(), result, input_func=lambda prompt: "")
+
+    assert held.submitted is True
+    assert held.needs_review is False
 
 
 def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:
