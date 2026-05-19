@@ -19,6 +19,7 @@ from src.utils.text_cleaner import normalize_whitespace
 
 
 JOB_CARD_SELECTORS = [
+    'li[data-automation-id="compositeContainer"]',
     '[data-automation-id="jobSearchResult"]',
     'li:has([data-automation-id="jobTitle"])',
     'div[role="listitem"]:has([data-automation-id="jobTitle"])',
@@ -27,6 +28,8 @@ JOB_CARD_SELECTORS = [
 ]
 
 PROMPT_OPTION_SELECTOR = '[data-automation-id="promptOption"][role="link"], [data-automation-id="promptOption"]'
+RESULT_ROW_SELECTOR = 'li[data-automation-id="compositeContainer"]'
+RESULT_COUNT_SELECTOR = 'span[id^="wd-FacetedSearchResultList-PaginationText"]'
 
 JOB_TITLE_SELECTORS = [
     '[data-automation-id="jobTitle"]',
@@ -259,6 +262,14 @@ def scrape_workday_jobs(
             previous_seen_count = 0
 
             for scroll_number in range(1, max_scrolls + 1):
+                if _is_job_detail_page(page):
+                    print("Detected job details page before scan; returning to results.", flush=True)
+                    if not _return_to_results_page(page, workday_url, wait_ms):
+                        _write_debug_dump(page, debug_dump_dir, f"scan_{scroll_number}_stuck_on_detail")
+                        break
+                elif not _has_results_list(page):
+                    _wait_for_results_page(page, wait_ms, attempts=4)
+
                 cards = _collect_ordered_result_cards(page)
                 visible_count = len(cards)
                 print(
@@ -280,10 +291,24 @@ def scrape_workday_jobs(
                     )
                 if visible_count == 0:
                     _write_debug_dump(page, debug_dump_dir, f"scan_{scroll_number}_no_candidates")
+                    if _is_job_detail_page(page):
+                        print("Detected job details page during scan; returning to results.", flush=True)
+                        if _return_to_results_page(page, workday_url, wait_ms):
+                            continue
+                        print("Stopping because Workday stayed on a job details page.", flush=True)
+                        break
 
                 for card_index, card in enumerate(cards):
                     if limit is not None and jobs_seen >= limit:
                         break
+                    if not _has_results_list(page):
+                        if not _return_to_results_page(page, workday_url, wait_ms):
+                            _write_debug_dump(
+                                page,
+                                debug_dump_dir,
+                                f"scan_{scroll_number}_before_click_not_results",
+                            )
+                            break
 
                     card_text = card.raw_text
                     if not card.title:
@@ -300,8 +325,16 @@ def scrape_workday_jobs(
                         continue
 
                     page.wait_for_timeout(wait_ms)
+                    if not _wait_for_job_detail_page(page, wait_ms, attempts=8):
+                        print(
+                            f"Could not confirm job details page after clicking {card.title}; returning to results.",
+                            flush=True,
+                        )
+                        _return_to_results_page(page, workday_url, wait_ms)
+                        continue
                     detail_text = _extract_detail_text(page)
                     if not detail_text:
+                        _return_to_results_page(page, workday_url, wait_ms)
                         continue
 
                     workday_job = build_workday_job(
@@ -312,7 +345,8 @@ def scrape_workday_jobs(
                     )
                     if workday_job.workday_id in seen_workday_ids:
                         processed_card_keys.add(card_key)
-                        _return_to_results_page(page, workday_url, wait_ms)
+                        if not _return_to_results_page(page, workday_url, wait_ms):
+                            break
                         continue
 
                     seen_workday_ids.add(workday_job.workday_id)
@@ -326,7 +360,9 @@ def scrape_workday_jobs(
                         f"{_posting_date_suffix(workday_job.posting_date)}",
                         flush=True,
                     )
-                    _return_to_results_page(page, workday_url, wait_ms)
+                    if not _return_to_results_page(page, workday_url, wait_ms):
+                        _write_debug_dump(page, debug_dump_dir, f"scan_{scroll_number}_return_failed")
+                        break
 
                 if limit is not None and jobs_seen >= limit:
                     print(f"Reached scrape limit of {limit}.", flush=True)
@@ -361,7 +397,14 @@ def scrape_workday_jobs(
 
 
 def _collect_ordered_result_cards(page) -> list[JobCard]:
-    cards = _parse_job_cards_from_page_text(_safe_body_text(page))
+    if _is_job_detail_page(page) or not _has_results_list(page):
+        return []
+
+    result_row_candidates = _collect_result_row_candidates(page)
+    if result_row_candidates:
+        return [candidate.card for candidate in result_row_candidates]
+
+    cards = _parse_result_cards_from_page_text(_safe_body_text(page))
     if cards:
         return cards
 
@@ -379,6 +422,9 @@ def _click_ordered_result_card(
     card_index: int,
     timeout_ms: int,
 ) -> bool:
+    if not _has_results_list(page):
+        return False
+
     occurrence_index = _title_occurrence_index(cards, card_index)
     prompt_options = _matching_prompt_options(page, card.title)
 
@@ -401,9 +447,9 @@ def _click_ordered_result_card(
 
 def _matching_prompt_options(page, title: str) -> list[object]:
     matches: list[object] = []
-    for handle in _visible_prompt_option_handles(page):
-        if _prompt_option_title(handle).lower() == title.lower():
-            matches.append(handle)
+    for candidate in _collect_result_row_candidates(page):
+        if candidate.card.title.lower() == title.lower():
+            matches.append(candidate.element)
 
     return matches
 
@@ -413,28 +459,30 @@ def _title_occurrence_index(cards: list[JobCard], card_index: int) -> int:
     return sum(1 for card in cards[:card_index] if card.title.lower() == title)
 
 
-def _return_to_results_page(page, workday_url: str, wait_ms: int) -> None:
-    if _has_results_list(page):
-        return
+def _return_to_results_page(page, workday_url: str, wait_ms: int) -> bool:
+    if _wait_for_results_page(page, wait_ms, attempts=2):
+        return True
 
     try:
         page.go_back(wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_timeout(wait_ms)
     except Exception:
         pass
 
-    if _has_results_list(page):
+    if _wait_for_results_page(page, wait_ms, attempts=8):
         print("Returned to results page.", flush=True)
-        return
+        return True
 
     try:
         page.goto(workday_url, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(wait_ms)
     except Exception:
         pass
 
-    if _has_results_list(page):
+    if _wait_for_results_page(page, wait_ms, attempts=10):
         print("Reloaded results page.", flush=True)
+        return True
+
+    print("Warning: could not return to the Workday results page.", flush=True)
+    return False
 
 
 def _reset_results_scroll_to_top(page, wait_ms: int) -> None:
@@ -478,8 +526,117 @@ def _reset_results_scroll_to_top(page, wait_ms: int) -> None:
 
 
 def _has_results_list(page) -> bool:
-    cards = _parse_job_cards_from_page_text(_safe_body_text(page))
-    return len(cards) >= 2
+    if _is_job_detail_page(page):
+        return False
+    if _has_results_list_dom(page):
+        return True
+    return _looks_like_results_page_text(_safe_body_text(page))
+
+
+def _wait_for_results_page(page, wait_ms: int, attempts: int) -> bool:
+    for _ in range(max(1, attempts)):
+        if _has_results_list(page):
+            return True
+        try:
+            page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+    return _has_results_list(page)
+
+
+def _wait_for_job_detail_page(page, wait_ms: int, attempts: int) -> bool:
+    for _ in range(max(1, attempts)):
+        if _is_job_detail_page(page):
+            return True
+        try:
+            page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+    return _is_job_detail_page(page)
+
+
+def _has_results_list_dom(page) -> bool:
+    if not _has_results_count_dom(page):
+        return False
+    return bool(_collect_result_row_candidates(page))
+
+
+def _has_results_count_dom(page) -> bool:
+    try:
+        locator = page.locator(RESULT_COUNT_SELECTOR)
+        count = locator.count()
+    except Exception:
+        return False
+
+    for index in range(count):
+        text = _safe_locator_text(locator.nth(index))
+        if _looks_like_results_count(text):
+            return True
+    return False
+
+
+def _collect_result_row_candidates(page) -> list[ClickableJobCard]:
+    try:
+        rows = page.query_selector_all(RESULT_ROW_SELECTOR)
+    except Exception:
+        return []
+
+    candidates: list[ClickableJobCard] = []
+    seen_keys: set[str] = set()
+    for row in rows:
+        row_text = _safe_element_text(row)
+        if not _looks_like_job_metadata_line(row_text):
+            continue
+        card = parse_job_card_text(row_text)
+        if not _is_valid_card(card):
+            continue
+
+        title_element = _result_row_title_element(row, card.title) or row
+        key = _card_key(card.raw_text)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        candidates.append(ClickableJobCard(element=title_element, card=card))
+
+    return sorted(candidates, key=lambda candidate: _element_sort_key(candidate.element))
+
+
+def _result_row_title_element(row, title: str):
+    try:
+        handles = row.query_selector_all(PROMPT_OPTION_SELECTOR)
+    except Exception:
+        return None
+
+    for handle in handles:
+        if _prompt_option_title(handle).lower() == title.lower() and _is_visible(handle):
+            return handle
+    return None
+
+
+def _is_job_detail_page(page) -> bool:
+    return _looks_like_job_detail_page_text(_safe_body_text(page))
+
+
+def _looks_like_results_page_text(page_text: str) -> bool:
+    if _looks_like_job_detail_page_text(page_text):
+        return False
+    return _looks_like_results_count(page_text) and bool(_parse_job_cards_from_page_text(page_text))
+
+
+def _looks_like_job_detail_page_text(page_text: str) -> bool:
+    text = normalize_whitespace(page_text)
+    if not text:
+        return False
+    lowered = text.lower()
+    if "view job posting details" in lowered:
+        return True
+    if "job details" in lowered and "job requisition id" in lowered:
+        return True
+    return False
+
+
+def _looks_like_results_count(text: str) -> bool:
+    return bool(re.search(r"(^|\n)\s*\d+\s+Results?\s*($|\n)", normalize_whitespace(text), flags=re.IGNORECASE))
 
 
 def _collect_job_card_candidates(page) -> list[ClickableJobCard]:
@@ -584,6 +741,12 @@ def _take_page_text_card_for_title(
             used_indexes.add(index)
             return card
     return None
+
+
+def _parse_result_cards_from_page_text(page_text: str) -> list[JobCard]:
+    if not _looks_like_results_page_text(page_text):
+        return []
+    return _parse_job_cards_from_page_text(page_text)
 
 
 def _parse_job_cards_from_page_text(page_text: str) -> list[JobCard]:
@@ -807,16 +970,24 @@ def _is_probable_job_title(value: str) -> bool:
     if re.fullmatch(r"(?:JR|R)\d{4,}", title, flags=re.IGNORECASE):
         return False
     if title.lower() in {
+        "apply",
+        "home",
         "job",
         "jobs",
         "find student jobs",
         "hybrid",
+        "personal resources",
         "remote",
+        "saved",
+        "search",
+        "skip to main content",
+        "skip to results",
         "tempe",
         "west",
         "polytechnic",
         "downtown phoenix",
         "posting date",
+        "view job posting details",
     }:
         return False
     if re.search(

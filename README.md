@@ -125,7 +125,7 @@ Three no-friction ways to start an application:
 python -m src.apply_cli --auto-apply-next --headed --submit
 ```
 
-This picks the highest-scoring `Strong Fit` job (`>= 70`) automatically.
+This picks the highest-scoring job (`>= 70`) automatically, preferring `Strong Fit` before `Possible Fit`.
 
 **Pick from a numbered menu:**
 
@@ -194,7 +194,7 @@ python -m src.apply_cli --auto-apply-next --headed --submit
 python -m src.apply_cli --pick --headed --submit
 ```
 
-Auto-apply the ranked queue. By default this filters to `Strong Fit` jobs with score `>= 70`:
+Auto-apply the ranked queue. By default this filters to jobs with score `>= 70`, preferring `Strong Fit` before `Possible Fit`:
 
 ```bash
 python -m src.apply_cli --auto-apply-queue --limit 3 --headed

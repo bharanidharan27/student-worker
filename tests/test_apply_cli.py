@@ -408,3 +408,32 @@ def test_auto_apply_next_chooses_next_best_job(monkeypatch, tmp_path: Path) -> N
     assert main(["--auto-apply-next", "--db-path", str(db_path)]) == 0
 
     assert calls == [strong_id]
+
+
+def test_auto_apply_next_defaults_to_possible_fit_when_no_strong_fit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    possible_id = upsert_job(_job("JR-possible", "Possible Job", 72, "Possible Fit"), db_path)
+    upsert_job(_job("JR-low", "Low Job", 69, "Possible Fit"), db_path)
+    calls = []
+
+    def fake_auto_apply_job(
+        job_id,
+        db_path,
+        auth_state_path,
+        submit,
+        headed,
+        debug_dump_dir,
+        timeout_ms,
+        application_profile,
+    ):
+        calls.append(job_id)
+        return AutoApplyResult(job_id, True, False, True, "filled")
+
+    monkeypatch.setattr("src.apply_cli.auto_apply_job", fake_auto_apply_job)
+
+    assert main(["--auto-apply-next", "--db-path", str(db_path)]) == 0
+
+    assert calls == [possible_id]

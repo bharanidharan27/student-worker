@@ -104,7 +104,7 @@ def auto_apply_queue(
     auth_state_path: Path = DEFAULT_AUTH_STATE_PATH,
     limit: int = 10,
     min_score: int = 70,
-    fit_label: str = "Strong Fit",
+    fit_label: str = "",
     submit: bool = False,
     headed: bool = True,
     debug_dump_dir: Path | None = None,
