@@ -2,7 +2,10 @@ from pathlib import Path
 
 from src.scraping.workday_scraper import (
     _is_probable_job_title,
+    _looks_like_job_detail_page_text,
+    _looks_like_results_page_text,
     _parse_job_cards_from_page_text,
+    _parse_result_cards_from_page_text,
     build_workday_job,
     extract_workday_id,
     infer_location_from_text,
@@ -52,6 +55,9 @@ def test_prompt_option_title_filter_accepts_real_titles_and_rejects_metadata() -
     assert _is_probable_job_title("JR120023") is False
     assert _is_probable_job_title("Campus: Tempe") is False
     assert _is_probable_job_title("Posting Date: 04/24/2026") is False
+    assert _is_probable_job_title("Skip to main content") is False
+    assert _is_probable_job_title("Skip To Results") is False
+    assert _is_probable_job_title("Home") is False
 
 
 def test_parse_job_cards_from_page_text_preserves_visible_order() -> None:
@@ -87,6 +93,59 @@ def test_parse_job_cards_from_page_text_handles_inline_rows() -> None:
 
     assert [card.title for card in cards] == ["Advising Office Aide", "Student Success Aide - DPC"]
     assert [card.workday_id for card in cards] == ["JR120138", "JR120032"]
+
+
+def test_results_page_text_requires_results_count_and_cards() -> None:
+    assert _looks_like_results_page_text(
+        """
+        Find Student Jobs
+        178 Results
+        Program Aide
+        JR119636 | Campus: Tempe | Posting Date: 05/18/2026
+        Robotic Design Lab Assistant
+        JR121330 | Campus: Tempe | Posting Date: 05/18/2026
+        """
+    )
+
+    assert not _looks_like_results_page_text(
+        """
+        Skip to main content
+        Accessibility Overview
+        """
+    )
+
+
+def test_detail_page_text_overrides_similar_job_rows() -> None:
+    detail_text = """
+    View Job Posting Details
+    Undergraduate Peer Mentor
+    Apply
+    Job Details
+    Job Requisition ID
+    JR121065
+    Similar Jobs
+    Academic Services Aide
+    JR120916 | Campus: Tempe | Posting Date: 05/18/2026
+    """
+
+    assert _looks_like_job_detail_page_text(detail_text)
+    assert not _looks_like_results_page_text(detail_text)
+    assert _parse_result_cards_from_page_text(detail_text) == []
+
+
+def test_result_page_parser_keeps_only_real_search_results() -> None:
+    cards = _parse_result_cards_from_page_text(
+        """
+        Find Student Jobs
+        178 Results
+        Program Aide
+        JR119636 | Campus: Tempe | Posting Date: 05/18/2026
+        Robotic Design Lab Assistant
+        JR121330 | Campus: Tempe | Posting Date: 05/18/2026
+        """
+    )
+
+    assert [card.workday_id for card in cards] == ["JR119636", "JR121330"]
 
 
 def test_build_workday_job_normalizes_detail_text() -> None:
