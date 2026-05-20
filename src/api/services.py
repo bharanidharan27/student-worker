@@ -101,10 +101,21 @@ class AutomationService:
         self.executor.shutdown(wait=False, cancel_futures=False)
 
     def submit(self, kind: str, params: dict[str, Any], action: RunAction) -> int:
-        run_id = create_automation_run(kind, params=params, db_path=self.db_path)
+        run_id = create_automation_run(
+            kind,
+            params=params,
+            db_path=self.db_path,
+            current_step="Queued behind any active browser automation.",
+        )
+        append_automation_run_log(
+            run_id,
+            "Run queued. Browser automation runs one job at a time.",
+            self.db_path,
+        )
         with self._lock:
             self._continue_events[run_id] = threading.Event()
         future = self.executor.submit(self._execute, run_id, action)
+        future.add_done_callback(lambda completed: self._handle_future_done(run_id, completed))
         with self._lock:
             self._futures[run_id] = future
         return run_id
@@ -187,3 +198,24 @@ class AutomationService:
             with self._lock:
                 self._continue_events.pop(run_id, None)
                 self._futures.pop(run_id, None)
+
+    def _handle_future_done(self, run_id: int, future: Future) -> None:
+        try:
+            exc = future.exception()
+        except Exception as error:
+            exc = error
+        if exc is None:
+            return
+
+        row = get_automation_run(run_id, self.db_path)
+        if row is not None and row["status"] in {"queued", "running", "waiting_for_user"}:
+            error = str(exc) or exc.__class__.__name__
+            append_automation_run_log(run_id, error, self.db_path, "error")
+            update_automation_run(
+                run_id,
+                self.db_path,
+                status="failed",
+                error=error,
+                current_step="Failed before the worker could finish.",
+                mark_finished=True,
+            )

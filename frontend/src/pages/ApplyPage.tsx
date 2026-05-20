@@ -1,11 +1,20 @@
-import { Play, Send, ShieldAlert } from "lucide-react";
+import { skipToken } from "@reduxjs/toolkit/query";
+import { CheckCircle2, Loader2, Play, Send, ShieldAlert } from "lucide-react";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { RunPanel } from "../components/RunPanel";
 import { StatusPill } from "../components/StatusPill";
-import { useApplyJobMutation, useApplyQueueMutation, useListJobsQuery } from "../services/api";
-import type { ApplyRequest } from "../types";
+import {
+  useApplyJobMutation,
+  useApplyQueueMutation,
+  useGetRunQuery,
+  useListJobsQuery,
+  useListRunsQuery,
+  useUpdateJobStatusMutation
+} from "../services/api";
+import type { ApplyRequest, AutomationRun, Job } from "../types";
+import { isActiveRunStatus } from "../utils/runStatus";
 
 export function ApplyPage(): ReactElement {
   const [runId, setRunId] = useState<number | null>(null);
@@ -28,17 +37,69 @@ export function ApplyPage(): ReactElement {
     },
     { pollingInterval: 5_000 }
   );
+  const refetchQueue = queueQuery.refetch;
   const [applyJob, applyJobState] = useApplyJobMutation();
   const [applyQueue, applyQueueState] = useApplyQueueMutation();
+  const [updateJobStatus, updateJobStatusState] = useUpdateJobStatusMutation();
+  const [pendingJobId, setPendingJobId] = useState<number | null>(null);
+  const runsQuery = useListRunsQuery(25, { pollingInterval: 2_000 });
+  const selectedRunQuery = useGetRunQuery(runId ?? skipToken, {
+    pollingInterval: runId ? 2_000 : 0
+  });
+  const refetchedRunId = useRef<number | null>(null);
+  const activeApplyRuns = useMemo(
+    () =>
+      (runsQuery.data?.runs ?? []).filter(
+        (run) => (run.kind === "apply_job" || run.kind === "apply_queue") && isActiveRunStatus(run.status)
+      ),
+    [runsQuery.data?.runs]
+  );
+  const activeJobRuns = useMemo(() => {
+    const runsByJobId = new Map<number, AutomationRun>();
+    for (const run of activeApplyRuns) {
+      if (run.kind !== "apply_job") {
+        continue;
+      }
+      const jobId = getRunJobId(run);
+      if (jobId !== null) {
+        runsByJobId.set(jobId, run);
+      }
+    }
+    return runsByJobId;
+  }, [activeApplyRuns]);
+  const applyBusy = activeApplyRuns.length > 0 || applyJobState.isLoading || applyQueueState.isLoading;
+
+  useEffect(() => {
+    if (
+      !selectedRunQuery.data ||
+      isActiveRunStatus(selectedRunQuery.data.status) ||
+      refetchedRunId.current === selectedRunQuery.data.id
+    ) {
+      return;
+    }
+    refetchedRunId.current = selectedRunQuery.data.id;
+    setPendingJobId(null);
+    void refetchQueue();
+  }, [refetchQueue, selectedRunQuery.data]);
 
   async function startJob(jobId: number): Promise<void> {
-    const run = await applyJob({ jobId, body: form }).unwrap();
-    setRunId(run.id);
+    setPendingJobId(jobId);
+    try {
+      const run = await applyJob({ jobId, body: form }).unwrap();
+      setRunId(run.id);
+    } catch {
+      setPendingJobId(null);
+    }
   }
 
   async function startQueue(): Promise<void> {
     const run = await applyQueue(form).unwrap();
     setRunId(run.id);
+  }
+
+  async function markApplied(jobId: number): Promise<void> {
+    await updateJobStatus({ jobId, status: "applied", note: "Marked applied from Apply queue." }).unwrap();
+    await refetchQueue();
   }
 
   return (
@@ -52,10 +113,14 @@ export function ApplyPage(): ReactElement {
           className="button button-primary"
           type="button"
           onClick={() => void startQueue()}
-          disabled={applyQueueState.isLoading}
+          disabled={applyBusy}
           title="Apply queue"
         >
-          <Send size={16} aria-hidden="true" />
+          {applyQueueState.isLoading || activeApplyRuns.some((run) => run.kind === "apply_queue") ? (
+            <Loader2 className="spin" size={16} aria-hidden="true" />
+          ) : (
+            <Send size={16} aria-hidden="true" />
+          )}
           Queue
         </button>
       </header>
@@ -144,22 +209,16 @@ export function ApplyPage(): ReactElement {
         </header>
         <div className="queue-list">
           {queueQuery.data?.jobs.map((job) => (
-            <article key={job.id} className="queue-item">
-              <div>
-                <strong>{job.title}</strong>
-                <span>{job.fit_score ?? "-"} / 100 | {job.recommended_resume_name || "-"}</span>
-              </div>
-              <StatusPill value={job.status} />
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => void startJob(job.id)}
-                disabled={applyJobState.isLoading}
-                title="Apply job"
-              >
-                <Play size={17} aria-hidden="true" />
-              </button>
-            </article>
+            <QueueJobRow
+              key={job.id}
+              job={job}
+              activeRun={activeJobRuns.get(job.id)}
+              applyBusy={applyBusy}
+              isPending={pendingJobId === job.id}
+              isUpdatingStatus={updateJobStatusState.isLoading}
+              onMarkApplied={markApplied}
+              onStartJob={startJob}
+            />
           ))}
           {!queueQuery.data?.jobs.length ? <p className="empty-state">No actionable jobs.</p> : null}
         </div>
@@ -168,4 +227,78 @@ export function ApplyPage(): ReactElement {
       <RunPanel runId={runId} title="Apply run" />
     </div>
   );
+}
+
+interface QueueJobRowProps {
+  activeRun: AutomationRun | undefined;
+  applyBusy: boolean;
+  isPending: boolean;
+  isUpdatingStatus: boolean;
+  job: Job;
+  onMarkApplied: (jobId: number) => Promise<void>;
+  onStartJob: (jobId: number) => Promise<void>;
+}
+
+function QueueJobRow({
+  activeRun,
+  applyBusy,
+  isPending,
+  isUpdatingStatus,
+  job,
+  onMarkApplied,
+  onStartJob
+}: QueueJobRowProps): ReactElement {
+  const isJobActive = isPending || activeRun !== undefined;
+  const isTerminalStatus = job.status === "applied" || job.status === "skipped";
+  const applyTitle = isJobActive ? "Queued" : "Apply job";
+
+  return (
+    <article className="queue-item">
+      <div>
+        <strong>{job.title}</strong>
+        <span>
+          {job.fit_score ?? "-"} / 100 | {job.recommended_resume_name || "-"}
+        </span>
+      </div>
+      <StatusPill value={job.status} />
+      <div className="queue-actions">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => void onMarkApplied(job.id)}
+          disabled={isUpdatingStatus || isJobActive || job.status === "applied"}
+          title="Mark applied"
+          aria-label={`Mark ${job.title} applied`}
+        >
+          <CheckCircle2 size={17} aria-hidden="true" />
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => void onStartJob(job.id)}
+          disabled={applyBusy || isTerminalStatus}
+          title={applyTitle}
+          aria-label={`${applyTitle}: ${job.title}`}
+        >
+          {isJobActive ? (
+            <Loader2 className="spin" size={17} aria-hidden="true" />
+          ) : (
+            <Play size={17} aria-hidden="true" />
+          )}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function getRunJobId(run: AutomationRun): number | null {
+  const jobId = run.params.job_id;
+  if (typeof jobId === "number") {
+    return jobId;
+  }
+  if (typeof jobId === "string" && jobId.trim()) {
+    const parsed = Number(jobId);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }

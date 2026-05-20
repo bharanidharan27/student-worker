@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -205,10 +205,12 @@ def create_app(
         status: str | None = Query(default=None),
         fit_label: str | None = Query(default=None),
         min_score: int | None = Query(default=None, ge=0, le=100),
+        posted_from: date | None = Query(default=None),
+        posted_to: date | None = Query(default=None),
         queue: bool = Query(default=False),
         limit: int = Query(default=100, ge=1, le=1_000),
     ) -> JobListResponse:
-        rows = _query_jobs(db_path, q, status, fit_label, min_score, queue, limit)
+        rows = _query_jobs(db_path, q, status, fit_label, min_score, posted_from, posted_to, queue, limit)
         return JobListResponse(jobs=[_job_response_from_row(row, include_description=False) for row in rows])
 
     @app.get("/api/jobs/{job_id}", response_model=JobResponse)
@@ -371,6 +373,8 @@ def _query_jobs(
     status: str | None,
     fit_label: str | None,
     min_score: int | None,
+    posted_from: date | None,
+    posted_to: date | None,
     queue: bool,
     limit: int,
 ):
@@ -389,6 +393,15 @@ def _query_jobs(
     if min_score is not None:
         where.append("COALESCE(fit_score, 0) >= ?")
         values.append(min_score)
+    posted_date_expression = f"({POSTING_DATE_SORT_SQL})"
+    if posted_from is not None or posted_to is not None:
+        where.append(f"{posted_date_expression} != ''")
+    if posted_from is not None:
+        where.append(f"{posted_date_expression} >= ?")
+        values.append(posted_from.isoformat())
+    if posted_to is not None:
+        where.append(f"{posted_date_expression} <= ?")
+        values.append(posted_to.isoformat())
     if q:
         like = f"%{q.lower()}%"
         where.append(
