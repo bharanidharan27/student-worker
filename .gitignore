@@ -10,6 +10,12 @@ playwright/.auth/
 *.log
 .DS_Store
 .pytest_cache/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
+*.tsbuildinfo
+.codex_deps/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
 

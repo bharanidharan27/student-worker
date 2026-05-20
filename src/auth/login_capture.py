@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
 
 DEFAULT_WORKDAY_URL = "https://www.myworkday.com/asu/d/task/1422$3898.htmld"
@@ -20,6 +21,7 @@ def capture_login_state(
     auth_state_path: Path = DEFAULT_AUTH_STATE_PATH,
     browser_name: str = "chromium",
     slow_mo_ms: int = 0,
+    wait_for_user: Callable[[str], None] | None = None,
 ) -> Path:
     """Open Workday for manual SSO/MFA, then save Playwright storage state."""
 
@@ -43,7 +45,11 @@ def capture_login_state(
         print("A browser window is open for ASU Workday.")
         print("Log in manually with ASU SSO and Duo/MFA.")
         print("Wait until the student jobs page is fully loaded.")
-        input("Press Enter here after the jobs page loads...")
+        prompt = "Press Enter here after the jobs page loads..."
+        if wait_for_user is None:
+            input(prompt)
+        else:
+            wait_for_user(prompt)
 
         context.storage_state(path=str(auth_state_path))
         browser.close()
@@ -98,4 +104,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
