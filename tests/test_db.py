@@ -2,12 +2,18 @@ import sqlite3
 from pathlib import Path
 
 from src.storage.db import (
+    append_automation_run_log,
     count_rows,
+    create_automation_run,
     get_connection,
+    get_automation_run,
     init_db,
+    list_automation_run_logs,
     list_jobs,
     list_tables,
+    mark_stale_automation_runs_interrupted,
     update_job_status,
+    update_automation_run,
     upsert_job,
 )
 from src.storage.models import JobRecord
@@ -18,7 +24,12 @@ def test_init_db_creates_required_tables(tmp_path: Path) -> None:
 
     init_db(db_path)
 
-    assert {"jobs", "generated_documents"}.issubset(list_tables(db_path))
+    assert {
+        "jobs",
+        "generated_documents",
+        "automation_runs",
+        "automation_run_logs",
+    }.issubset(list_tables(db_path))
 
 
 def test_upsert_job_deduplicates_by_workday_id(tmp_path: Path) -> None:
@@ -135,3 +146,39 @@ def test_init_db_migrates_old_jobs_table_without_losing_rows(tmp_path: Path) -> 
         "last_action_at",
     }.issubset(columns)
     assert row_count == 1
+
+
+def test_automation_run_persistence_and_logs(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+
+    run_id = create_automation_run("scrape", {"limit": 2}, db_path=db_path)
+    assert update_automation_run(
+        run_id,
+        db_path=db_path,
+        status="completed",
+        result={"jobs_saved": 2},
+        current_step="Completed.",
+        mark_started=True,
+        mark_finished=True,
+    )
+    append_automation_run_log(run_id, "Saved two jobs.", db_path=db_path)
+
+    run = get_automation_run(run_id, db_path=db_path)
+    logs = list_automation_run_logs(run_id, db_path=db_path)
+
+    assert run is not None
+    assert run["status"] == "completed"
+    assert '"jobs_saved":2' in run["result_json"]
+    assert logs[0]["message"] == "Saved two jobs."
+
+
+def test_stale_automation_runs_are_marked_interrupted(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    running_id = create_automation_run("scrape", {}, db_path=db_path, status="running")
+    done_id = create_automation_run("scrape", {}, db_path=db_path, status="completed")
+
+    interrupted = mark_stale_automation_runs_interrupted(db_path)
+
+    assert interrupted == 1
+    assert get_automation_run(running_id, db_path)["status"] == "interrupted"
+    assert get_automation_run(done_id, db_path)["status"] == "completed"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,15 @@ from src.storage.models import GeneratedDocumentRecord, JobRecord
 DEFAULT_DB_PATH = Path("data/jobs.sqlite")
 APPLY_QUEUE_EXCLUDED_STATUSES = ("applied", "skipped")
 VALID_APPLICATION_STATUSES = {"new", "reviewing", "applied", "skipped"}
+ACTIVE_AUTOMATION_RUN_STATUSES = {"queued", "running", "waiting_for_user"}
+VALID_AUTOMATION_RUN_STATUSES = {
+    "queued",
+    "running",
+    "waiting_for_user",
+    "completed",
+    "failed",
+    "interrupted",
+}
 
 JOB_LIST_COLUMNS_SQL = """
   id,
@@ -90,6 +100,35 @@ CREATE TABLE IF NOT EXISTS generated_documents (
 """
 
 
+AUTOMATION_RUNS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  params_json TEXT,
+  result_json TEXT,
+  current_step TEXT,
+  error TEXT,
+  started_at TIMESTAMP,
+  finished_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+AUTOMATION_RUN_LOGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS automation_run_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  level TEXT NOT NULL DEFAULT 'info',
+  message TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(run_id) REFERENCES automation_runs(id)
+);
+"""
+
+
 JOBS_COLUMN_MIGRATIONS = {
     "job_family": "ALTER TABLE jobs ADD COLUMN job_family TEXT;",
     "recommended_resume_name": "ALTER TABLE jobs ADD COLUMN recommended_resume_name TEXT;",
@@ -116,6 +155,8 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
         connection.execute("PRAGMA foreign_keys = ON;")
         connection.execute(JOBS_TABLE_SQL)
         connection.execute(GENERATED_DOCUMENTS_TABLE_SQL)
+        connection.execute(AUTOMATION_RUNS_TABLE_SQL)
+        connection.execute(AUTOMATION_RUN_LOGS_TABLE_SQL)
         _migrate_jobs_table(connection)
         connection.commit()
 
@@ -213,6 +254,193 @@ def insert_generated_document(
         )
         connection.commit()
     return int(cursor.lastrowid)
+
+
+def create_automation_run(
+    kind: str,
+    params: dict | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+    status: str = "queued",
+    current_step: str | None = None,
+) -> int:
+    if status not in VALID_AUTOMATION_RUN_STATUSES:
+        raise ValueError(f"Unsupported automation run status: {status}")
+
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO automation_runs (kind, status, params_json, current_step)
+            VALUES (?, ?, ?, ?);
+            """,
+            (kind, status, _json_dumps(params or {}), current_step),
+        )
+        connection.commit()
+    return int(cursor.lastrowid)
+
+
+def update_automation_run(
+    run_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+    *,
+    status: str | None = None,
+    result: dict | list | None = None,
+    current_step: str | None = None,
+    error: str | None = None,
+    mark_started: bool = False,
+    mark_finished: bool = False,
+) -> bool:
+    if status is not None and status not in VALID_AUTOMATION_RUN_STATUSES:
+        raise ValueError(f"Unsupported automation run status: {status}")
+
+    init_db(db_path)
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[object] = []
+    if status is not None:
+        assignments.append("status = ?")
+        values.append(status)
+    if result is not None:
+        assignments.append("result_json = ?")
+        values.append(_json_dumps(result))
+    if current_step is not None:
+        assignments.append("current_step = ?")
+        values.append(current_step)
+    if error is not None:
+        assignments.append("error = ?")
+        values.append(error)
+    if mark_started:
+        assignments.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
+    if mark_finished:
+        assignments.append("finished_at = CURRENT_TIMESTAMP")
+
+    values.append(run_id)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE automation_runs
+            SET {", ".join(assignments)}
+            WHERE id = ?;
+            """,
+            values,
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
+def append_automation_run_log(
+    run_id: int,
+    message: str,
+    db_path: Path = DEFAULT_DB_PATH,
+    level: str = "info",
+) -> int:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO automation_run_logs (run_id, level, message)
+            VALUES (?, ?, ?);
+            """,
+            (run_id, level, message),
+        )
+        connection.commit()
+    return int(cursor.lastrowid)
+
+
+def get_automation_run(run_id: int, db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Row | None:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT
+              id,
+              kind,
+              status,
+              params_json,
+              result_json,
+              current_step,
+              error,
+              started_at,
+              finished_at,
+              created_at,
+              updated_at
+            FROM automation_runs
+            WHERE id = ?;
+            """,
+            (run_id,),
+        ).fetchone()
+    return row
+
+
+def list_automation_runs(db_path: Path = DEFAULT_DB_PATH, limit: int = 50) -> list[sqlite3.Row]:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+              id,
+              kind,
+              status,
+              params_json,
+              result_json,
+              current_step,
+              error,
+              started_at,
+              finished_at,
+              created_at,
+              updated_at
+            FROM automation_runs
+            ORDER BY id DESC
+            LIMIT ?;
+            """,
+            (limit,),
+        ).fetchall()
+    return rows
+
+
+def list_automation_run_logs(
+    run_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+    after_id: int | None = None,
+    limit: int = 500,
+) -> list[sqlite3.Row]:
+    init_db(db_path)
+    where = "run_id = ?"
+    values: list[object] = [run_id]
+    if after_id is not None:
+        where += " AND id > ?"
+        values.append(after_id)
+    values.append(limit)
+    with get_connection(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, run_id, level, message, created_at
+            FROM automation_run_logs
+            WHERE {where}
+            ORDER BY id ASC
+            LIMIT ?;
+            """,
+            values,
+        ).fetchall()
+    return rows
+
+
+def mark_stale_automation_runs_interrupted(db_path: Path = DEFAULT_DB_PATH) -> int:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE automation_runs
+            SET
+              status = 'interrupted',
+              error = COALESCE(error, 'API server restarted before this run finished.'),
+              finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE status IN ({",".join("?" for _ in ACTIVE_AUTOMATION_RUN_STATUSES)});
+            """,
+            tuple(ACTIVE_AUTOMATION_RUN_STATUSES),
+        )
+        connection.commit()
+    return cursor.rowcount
 
 
 def count_rows(table: str, db_path: Path = DEFAULT_DB_PATH) -> int:
@@ -320,6 +548,10 @@ def execute_schema(db_path: Path = DEFAULT_DB_PATH) -> Iterable[str]:
             "SELECT sql FROM sqlite_master WHERE type = 'table' ORDER BY name;"
         ).fetchall()
     return [row["sql"] for row in rows if row["sql"]]
+
+
+def _json_dumps(value: dict | list) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def main(argv: list[str] | None = None) -> int:

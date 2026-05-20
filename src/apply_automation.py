@@ -172,6 +172,7 @@ def _run_playwright_apply(
     auth_state_path: Path,
     timeout_ms: int,
     profile: ApplicationProfile,
+    review_input_func: Callable[[str], str] | None = None,
 ) -> AutoApplyResult:
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -183,7 +184,13 @@ def _run_playwright_apply(
         ) from exc
 
     def finish(result: AutoApplyResult, page) -> AutoApplyResult:
-        return _hold_browser_open_for_review(page, result) if headed and result.needs_review else result
+        if headed and result.needs_review:
+            return _hold_browser_open_for_review(
+                page,
+                result,
+                input_func=review_input_func or input,
+            )
+        return result
 
     keep_open_for_review = headed
     with sync_playwright() as playwright:

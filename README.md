@@ -216,6 +216,22 @@ python -m src.scraping.workday_scraper --limit 10 --headed --max-scrolls 1 --idl
 
 That writes the current page text and screenshot to `outputs/debug/` so the selectors can be adjusted against the actual page state.
 
-## Dashboard
+## React/FastAPI Dashboard
 
-The Streamlit dashboard is intentionally deferred until a later milestone. `app.py` currently points users to the CLI flow.
+The local dashboard wraps the same human-in-the-loop CLI modules with a FastAPI API and a React/Redux frontend.
+
+Start the API:
+
+```bash
+.venv\Scripts\python.exe -m uvicorn src.api.app:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend in another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The UI includes login capture, session checks, scrape runs, job review/status updates, guarded auto-apply controls, and persisted run history. Final Workday submission is off by default and requires an explicit confirmation toggle in the UI.
