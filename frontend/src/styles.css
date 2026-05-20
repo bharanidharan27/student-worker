@@ -125,9 +125,10 @@ a {
 }
 
 .page-split {
-  grid-template-columns: minmax(420px, 0.94fr) minmax(360px, 1.06fr);
+  grid-template-columns: minmax(0, 0.95fr) minmax(380px, 1.05fr);
   align-items: start;
-  max-width: 1500px;
+  max-width: none;
+  width: 100%;
 }
 
 .page-header,
@@ -235,7 +236,13 @@ a {
 .list-pane {
   display: grid;
   gap: 16px;
+  min-width: 0;
   padding: 16px;
+}
+
+.detail-pane,
+.list-pane {
+  overflow: hidden;
 }
 
 .detail-pane--plain {
@@ -409,8 +416,21 @@ tr:focus-visible {
 
 .filter-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) 150px 150px 112px;
+  grid-template-columns: minmax(180px, 1fr) minmax(132px, 150px) minmax(120px, 150px) minmax(104px, 116px);
   gap: 10px;
+  min-width: 0;
+}
+
+.date-filter-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 180px)) auto;
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.date-filter-row label {
+  min-width: 0;
 }
 
 .search-field {
@@ -436,12 +456,34 @@ tr:focus-visible {
   overflow: auto;
   border: 1px solid #deded6;
   border-radius: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 760px;
+}
+
+.jobs-table {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.jobs-col-title {
+  width: 34%;
+}
+
+.jobs-col-fit {
+  width: 104px;
+}
+
+.jobs-col-status {
+  width: 126px;
+}
+
+.jobs-col-resume {
+  width: auto;
 }
 
 th,
@@ -450,6 +492,7 @@ td {
   padding: 10px;
   text-align: left;
   vertical-align: top;
+  min-width: 0;
 }
 
 th {
@@ -480,6 +523,37 @@ tbody tr {
 tbody tr:hover,
 .selected-row {
   background: #edf6f3;
+}
+
+.job-title-cell strong,
+.job-title-cell span,
+.resume-cell span,
+.fit-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-title-cell strong,
+.resume-cell span {
+  white-space: nowrap;
+}
+
+.job-title-cell span,
+.fit-cell span {
+  white-space: normal;
+}
+
+.fit-cell {
+  color: #11130f;
+}
+
+.fit-cell strong {
+  font-size: 17px;
+  line-height: 1.15;
+}
+
+.resume-cell span {
+  max-width: 100%;
 }
 
 .job-meta {
@@ -528,6 +602,15 @@ tbody tr:hover,
   overflow-wrap: anywhere;
 }
 
+.empty-state-panel {
+  display: grid;
+  min-height: 68px;
+  place-items: center;
+  border: 1px dashed #cfd2c7;
+  border-radius: 8px;
+  background: #fafaf5;
+}
+
 .queue-list,
 .run-list {
   display: grid;
@@ -558,6 +641,13 @@ tbody tr:hover,
 .queue-item span {
   color: #676b63;
   font-size: 12px;
+}
+
+.queue-item .queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: max-content;
 }
 
 .run-row {
@@ -610,7 +700,8 @@ tbody tr:hover,
   .metrics-band,
   .form-grid,
   .run-grid,
-  .filter-row {
+  .filter-row,
+  .date-filter-row {
     grid-template-columns: 1fr;
   }
 }

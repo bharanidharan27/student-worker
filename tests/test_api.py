@@ -28,9 +28,23 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
             workday_id="JR-api",
             title="Office Aide",
             location="Tempe campus",
+            posting_date="04/24/2026",
             raw_description="Office aide role.",
             fit_score=91,
             fit_label="Strong Fit",
+            recommended_resume_type="admin_office",
+        ),
+        db_path=db_path,
+    )
+    upsert_job(
+        JobRecord(
+            workday_id="JR-old",
+            title="Desk Assistant",
+            location="Tempe campus",
+            posting_date="04/10/2026",
+            raw_description="Desk assistant role.",
+            fit_score=75,
+            fit_label="Possible Fit",
             recommended_resume_type="admin_office",
         ),
         db_path=db_path,
@@ -41,11 +55,17 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     with TestClient(app) as client:
         health = client.get("/api/health")
         jobs = client.get("/api/jobs", params={"q": "office"})
+        dated_jobs = client.get(
+            "/api/jobs",
+            params={"posted_from": "2026-04-20", "posted_to": "2026-04-25"},
+        )
 
     assert health.status_code == 200
     assert health.json()["ok"] is True
     assert jobs.status_code == 200
     assert jobs.json()["jobs"][0]["workday_id"] == "JR-api"
+    assert dated_jobs.status_code == 200
+    assert [job["workday_id"] for job in dated_jobs.json()["jobs"]] == ["JR-api"]
 
 
 def test_api_rejects_submit_without_confirmation(tmp_path: Path) -> None:

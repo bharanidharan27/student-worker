@@ -70,6 +70,8 @@ export interface JobFilters {
   status?: string;
   fit_label?: string;
   min_score?: number;
+  posted_from?: string;
+  posted_to?: string;
   queue?: boolean;
   limit?: number;
 }

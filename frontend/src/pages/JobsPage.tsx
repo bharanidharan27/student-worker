@@ -1,6 +1,6 @@
 import { Check, ExternalLink, Search, X } from "lucide-react";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { StatusPill } from "../components/StatusPill";
 import { useGetJobQuery, useListJobsQuery, useUpdateJobStatusMutation } from "../services/api";
@@ -17,9 +17,27 @@ export function JobsPage(): ReactElement {
   const [updateStatus, updateState] = useUpdateJobStatusMutation();
 
   const selected = selectedQuery.data;
+  const jobs = jobsQuery.data?.jobs ?? [];
+
+  useEffect(() => {
+    if (jobs.length === 0 && selectedJobId !== null) {
+      setSelectedJobId(null);
+      return;
+    }
+    if (selectedJobId === null && jobs.length > 0) {
+      setSelectedJobId(jobs[0].id);
+    }
+    if (selectedJobId !== null && jobs.length > 0 && !jobs.some((job) => job.id === selectedJobId)) {
+      setSelectedJobId(jobs[0].id);
+    }
+  }, [jobs, selectedJobId]);
 
   function patchFilters(next: Partial<JobFilters>): void {
     setFilters((current) => ({ ...current, ...next }));
+  }
+
+  function clearDateFilters(): void {
+    patchFilters({ posted_from: undefined, posted_to: undefined });
   }
 
   async function mark(status: "reviewing" | "applied" | "skipped" | "new"): Promise<void> {
@@ -37,6 +55,7 @@ export function JobsPage(): ReactElement {
             <span className="eyebrow">Jobs</span>
             <h1>Saved Queue</h1>
           </div>
+          <span className="count-badge">{jobs.length}</span>
         </header>
 
         <div className="filter-row">
@@ -78,8 +97,43 @@ export function JobsPage(): ReactElement {
           />
         </div>
 
+        <div className="date-filter-row">
+          <label>
+            <span>Posted from</span>
+            <input
+              type="date"
+              value={filters.posted_from || ""}
+              onChange={(event) => patchFilters({ posted_from: event.target.value || undefined })}
+            />
+          </label>
+          <label>
+            <span>Posted to</span>
+            <input
+              type="date"
+              value={filters.posted_to || ""}
+              onChange={(event) => patchFilters({ posted_to: event.target.value || undefined })}
+            />
+          </label>
+          <button
+            className="button"
+            type="button"
+            onClick={clearDateFilters}
+            disabled={!filters.posted_from && !filters.posted_to}
+            title="Clear date filters"
+          >
+            <X size={16} aria-hidden="true" />
+            Dates
+          </button>
+        </div>
+
         <div className="table-wrap">
-          <table>
+          <table className="jobs-table">
+            <colgroup>
+              <col className="jobs-col-title" />
+              <col className="jobs-col-fit" />
+              <col className="jobs-col-status" />
+              <col className="jobs-col-resume" />
+            </colgroup>
             <thead>
               <tr>
                 <th>Title</th>
@@ -101,28 +155,41 @@ export function JobsPage(): ReactElement {
                   }}
                   tabIndex={0}
                 >
-                  <td>
+                  <td className="job-title-cell">
                     <strong>{job.title}</strong>
-                    <span>{job.location || job.workday_id || "-"}</span>
+                    <span>
+                      {job.location || job.workday_id || "-"}
+                      {job.posting_date ? ` | Posted ${job.posting_date}` : ""}
+                    </span>
                   </td>
-                  <td>{job.fit_score ?? "-"} {job.fit_label || ""}</td>
+                  <td className="fit-cell">
+                    <strong>{job.fit_score ?? "-"}</strong>
+                    <span>{job.fit_label || "-"}</span>
+                  </td>
                   <td>
                     <StatusPill value={job.status} />
                   </td>
-                  <td>{job.recommended_resume_name || "-"}</td>
+                  <td className="resume-cell" title={job.recommended_resume_name || ""}>
+                    <span>{job.recommended_resume_name || "-"}</span>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!jobsQuery.data?.jobs.length ? <p className="empty-state">No jobs match.</p> : null}
+          {!jobs.length ? <p className="empty-state">No jobs match.</p> : null}
         </div>
       </section>
 
       <section className="detail-pane">
-        {selected ? (
+        {selectedQuery.isFetching && !selected ? (
+          <p className="empty-state empty-state-panel">Loading job detail.</p>
+        ) : selected ? (
           <>
             <header className="panel-header">
-              <h2>{selected.title}</h2>
+              <div>
+                <span className="eyebrow">Selected Job</span>
+                <h2>{selected.title}</h2>
+              </div>
               <StatusPill value={selected.status} />
             </header>
             <div className="job-meta">
@@ -167,7 +234,7 @@ export function JobsPage(): ReactElement {
             <pre className="description-box">{selected.raw_description || "No description stored."}</pre>
           </>
         ) : (
-          <p className="empty-state">Select a job.</p>
+          <p className="empty-state empty-state-panel">Select a job.</p>
         )}
       </section>
     </div>
