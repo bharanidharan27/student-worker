@@ -6,6 +6,8 @@ export type RunStatus =
   | "failed"
   | "interrupted";
 
+export type JobSort = "best_fit" | "extracted" | "posted_desc" | "posted_asc";
+
 export interface AutomationRun {
   id: number;
   kind: string;
@@ -72,6 +74,7 @@ export interface JobFilters {
   min_score?: number;
   posted_from?: string;
   posted_to?: string;
+  sort?: JobSort;
   queue?: boolean;
   limit?: number;
 }

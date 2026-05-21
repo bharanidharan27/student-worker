@@ -529,13 +529,14 @@ def update_job_status(
               END,
               applied_at = CASE
                 WHEN ? = 'applied' THEN CURRENT_TIMESTAMP
+                WHEN ? = 'new' THEN NULL
                 ELSE applied_at
               END,
               last_action_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP
             WHERE id = ?;
             """,
-            (status, note, note, status, job_id),
+            (status, note, note, status, status, job_id),
         )
         connection.commit()
     return cursor.rowcount > 0

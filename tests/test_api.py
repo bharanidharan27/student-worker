@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.services import AutomationService
-from src.storage.db import create_automation_run, get_automation_run, upsert_job
+from src.storage.db import create_automation_run, get_automation_run, update_automation_run, upsert_job
 from src.storage.models import JobRecord
 
 
@@ -23,7 +23,7 @@ def _wait_for_status(db_path: Path, run_id: int, status: str, timeout_s: float =
 
 def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.sqlite"
-    upsert_job(
+    api_job_id = upsert_job(
         JobRecord(
             workday_id="JR-api",
             title="Office Aide",
@@ -36,7 +36,7 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
         ),
         db_path=db_path,
     )
-    upsert_job(
+    old_job_id = upsert_job(
         JobRecord(
             workday_id="JR-old",
             title="Desk Assistant",
@@ -51,6 +51,13 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     )
     service = AutomationService(db_path)
     app = create_app(db_path=db_path, automation_service=service)
+    scrape_run_id = create_automation_run("scrape", {}, db_path=db_path, status="completed")
+    update_automation_run(
+        scrape_run_id,
+        db_path,
+        result={"job_ids": [old_job_id, api_job_id]},
+        mark_finished=True,
+    )
 
     with TestClient(app) as client:
         health = client.get("/api/health")
@@ -59,6 +66,8 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
             "/api/jobs",
             params={"posted_from": "2026-04-20", "posted_to": "2026-04-25"},
         )
+        extracted_jobs = client.get("/api/jobs", params={"sort": "extracted"})
+        posted_jobs = client.get("/api/jobs", params={"sort": "posted_desc"})
 
     assert health.status_code == 200
     assert health.json()["ok"] is True
@@ -66,6 +75,8 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     assert jobs.json()["jobs"][0]["workday_id"] == "JR-api"
     assert dated_jobs.status_code == 200
     assert [job["workday_id"] for job in dated_jobs.json()["jobs"]] == ["JR-api"]
+    assert [job["workday_id"] for job in extracted_jobs.json()["jobs"][:2]] == ["JR-old", "JR-api"]
+    assert [job["workday_id"] for job in posted_jobs.json()["jobs"][:2]] == ["JR-api", "JR-old"]
 
 
 def test_api_rejects_submit_without_confirmation(tmp_path: Path) -> None:
@@ -78,6 +89,43 @@ def test_api_rejects_submit_without_confirmation(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "confirm_submit" in response.json()["detail"]
+
+
+def test_api_unapply_returns_job_to_apply_queue(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job_id = upsert_job(
+        JobRecord(
+            workday_id="JR-requeue",
+            title="Student Support Aide",
+            raw_description="Support role.",
+            fit_score=82,
+            fit_label="Strong Fit",
+        ),
+        db_path=db_path,
+    )
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    with TestClient(app) as client:
+        applied = client.patch(
+            f"/api/jobs/{job_id}/status",
+            json={"status": "applied", "note": "Submitted manually."},
+        )
+        queue_after_apply = client.get("/api/jobs", params={"queue": True})
+        unapplied = client.patch(
+            f"/api/jobs/{job_id}/status",
+            json={"status": "new", "note": "Moved back to Apply queue."},
+        )
+        queue_after_unapply = client.get("/api/jobs", params={"queue": True})
+
+    assert applied.status_code == 200
+    assert applied.json()["status"] == "applied"
+    assert applied.json()["applied_at"]
+    assert [job["id"] for job in queue_after_apply.json()["jobs"]] == []
+    assert unapplied.status_code == 200
+    assert unapplied.json()["status"] == "new"
+    assert unapplied.json()["applied_at"] is None
+    assert [job["id"] for job in queue_after_unapply.json()["jobs"]] == [job_id]
 
 
 def test_api_continue_unblocks_waiting_run(tmp_path: Path) -> None:

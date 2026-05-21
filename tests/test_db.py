@@ -93,6 +93,30 @@ def test_upsert_preserves_existing_application_status(tmp_path: Path) -> None:
     assert row["application_notes"] == "Submitted manually."
 
 
+def test_unapply_clears_applied_timestamp(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job = JobRecord(
+        workday_id="JR-unapply",
+        title="Office Aide",
+        raw_description="Office aide role.",
+    )
+
+    job_id = upsert_job(job, db_path)
+    assert update_job_status(job_id, "applied", "Submitted manually.", db_path)
+    assert update_job_status(job_id, "new", "Marked unapplied.", db_path)
+
+    with get_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT status, application_notes, applied_at, last_action_at FROM jobs WHERE id = ?;",
+            (job_id,),
+        ).fetchone()
+
+    assert row["status"] == "new"
+    assert row["application_notes"] == "Marked unapplied."
+    assert row["applied_at"] is None
+    assert row["last_action_at"]
+
+
 def test_init_db_migrates_old_jobs_table_without_losing_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "old_jobs.sqlite"
     with sqlite3.connect(db_path) as connection:

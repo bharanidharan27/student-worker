@@ -131,6 +131,11 @@ a {
   width: 100%;
 }
 
+.page-full {
+  max-width: none;
+  width: 100%;
+}
+
 .page-header,
 .panel-header {
   display: flex;
@@ -317,6 +322,11 @@ tr:focus-visible {
   color: #9a2e2e;
 }
 
+.notice-warn {
+  background: #fff1c7;
+  color: #805700;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -423,7 +433,7 @@ tr:focus-visible {
 
 .date-filter-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 180px)) auto;
+  grid-template-columns: repeat(2, minmax(150px, 180px)) minmax(150px, 180px) auto;
   align-items: end;
   gap: 10px;
   min-width: 0;
@@ -450,6 +460,24 @@ tr:focus-visible {
 
 .score-input {
   min-width: 0;
+}
+
+.compact-field {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.compact-field span {
+  color: #6e7069;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.compact-field select {
+  min-height: 34px;
 }
 
 .table-wrap {
@@ -480,6 +508,10 @@ table {
 
 .jobs-col-status {
   width: 126px;
+}
+
+.jobs-col-applied {
+  width: 132px;
 }
 
 .jobs-col-resume {
@@ -527,6 +559,7 @@ tbody tr:hover,
 
 .job-title-cell strong,
 .job-title-cell span,
+.applied-cell span,
 .resume-cell span,
 .fit-cell span {
   overflow: hidden;
@@ -534,6 +567,7 @@ tbody tr:hover,
 }
 
 .job-title-cell strong,
+.applied-cell span,
 .resume-cell span {
   white-space: nowrap;
 }
