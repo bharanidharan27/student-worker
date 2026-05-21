@@ -1,5 +1,5 @@
 import { skipToken } from "@reduxjs/toolkit/query";
-import { CheckCircle2, Loader2, Play, Send, ShieldAlert } from "lucide-react";
+import { CheckCircle2, Eye, EyeOff, Loader2, Play, Send, ShieldAlert } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -13,11 +13,21 @@ import {
   useListRunsQuery,
   useUpdateJobStatusMutation
 } from "../services/api";
-import type { ApplyRequest, AutomationRun, Job } from "../types";
+import type { ApplyRequest, AutomationRun, Job, JobSort } from "../types";
 import { isActiveRunStatus } from "../utils/runStatus";
+
+const sortOptions: Array<{ label: string; value: JobSort }> = [
+  { label: "Best fit", value: "best_fit" },
+  { label: "Extracted order", value: "extracted" },
+  { label: "Posted newest", value: "posted_desc" },
+  { label: "Posted oldest", value: "posted_asc" }
+];
+const APPLY_RUN_STORAGE_KEY = "student-work-applier:showApplyRun";
 
 export function ApplyPage(): ReactElement {
   const [runId, setRunId] = useState<number | null>(null);
+  const [queueSort, setQueueSort] = useState<JobSort>("best_fit");
+  const [showRunPanel, setShowRunPanel] = useState<boolean>(() => loadRunPanelPreference());
   const [form, setForm] = useState<ApplyRequest>({
     submit: false,
     confirm_submit: false,
@@ -33,7 +43,8 @@ export function ApplyPage(): ReactElement {
       queue: true,
       limit: 25,
       min_score: form.min_score,
-      fit_label: form.fit_label || undefined
+      fit_label: form.fit_label || undefined,
+      sort: queueSort
     },
     { pollingInterval: 5_000 }
   );
@@ -100,6 +111,14 @@ export function ApplyPage(): ReactElement {
   async function markApplied(jobId: number): Promise<void> {
     await updateJobStatus({ jobId, status: "applied", note: "Marked applied from Apply queue." }).unwrap();
     await refetchQueue();
+  }
+
+  function toggleRunPanel(): void {
+    setShowRunPanel((current) => {
+      const next = !current;
+      rememberRunPanelPreference(next);
+      return next;
+    });
   }
 
   return (
@@ -205,7 +224,29 @@ export function ApplyPage(): ReactElement {
       <section className="panel">
         <header className="panel-header">
           <h2>Ranked jobs</h2>
-          <span className="count-badge">{queueQuery.data?.jobs.length ?? 0}</span>
+          <div className="header-actions">
+            <label className="compact-field">
+              <span>Sort</span>
+              <select value={queueSort} onChange={(event) => setQueueSort(event.target.value as JobSort)}>
+                {sortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="count-badge">{queueQuery.data?.jobs.length ?? 0}</span>
+            <button
+              className="button"
+              type="button"
+              onClick={toggleRunPanel}
+              aria-pressed={!showRunPanel}
+              title={showRunPanel ? "Hide apply run" : "Show apply run"}
+            >
+              {showRunPanel ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+              {showRunPanel ? "Hide Run" : "Show Run"}
+            </button>
+          </div>
         </header>
         <div className="queue-list">
           {queueQuery.data?.jobs.map((job) => (
@@ -224,7 +265,7 @@ export function ApplyPage(): ReactElement {
         </div>
       </section>
 
-      <RunPanel runId={runId} title="Apply run" />
+      {showRunPanel ? <RunPanel runId={runId} title="Apply run" /> : null}
     </div>
   );
 }
@@ -301,4 +342,17 @@ function getRunJobId(run: AutomationRun): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function loadRunPanelPreference(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return window.localStorage.getItem(APPLY_RUN_STORAGE_KEY) !== "false";
+}
+
+function rememberRunPanelPreference(showRunPanel: boolean): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(APPLY_RUN_STORAGE_KEY, String(showRunPanel));
+  }
 }

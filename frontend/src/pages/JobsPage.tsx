@@ -1,22 +1,30 @@
-import { Check, ExternalLink, Search, X } from "lucide-react";
+import { Check, ExternalLink, Eye, EyeOff, Search, Undo2, X } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 
 import { StatusPill } from "../components/StatusPill";
 import { useGetJobQuery, useListJobsQuery, useUpdateJobStatusMutation } from "../services/api";
-import type { JobFilters } from "../types";
+import type { JobFilters, JobSort } from "../types";
 
 const statuses = ["", "new", "reviewing", "applied", "skipped"];
 const labels = ["", "Strong Fit", "Possible Fit", "Skip"];
+const sortOptions: Array<{ label: string; value: JobSort }> = [
+  { label: "Best fit", value: "best_fit" },
+  { label: "Extracted order", value: "extracted" },
+  { label: "Posted newest", value: "posted_desc" },
+  { label: "Posted oldest", value: "posted_asc" }
+];
+const JOB_DETAIL_STORAGE_KEY = "student-work-applier:showJobDetail";
 
 export function JobsPage(): ReactElement {
-  const [filters, setFilters] = useState<JobFilters>({ limit: 100 });
+  const [filters, setFilters] = useState<JobFilters>({ limit: 100, sort: "best_fit" });
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [showDetails, setShowDetails] = useState<boolean>(() => loadDetailPreference());
   const jobsQuery = useListJobsQuery(filters, { pollingInterval: 5_000 });
-  const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null });
+  const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null || !showDetails });
   const [updateStatus, updateState] = useUpdateJobStatusMutation();
 
-  const selected = selectedQuery.data;
+  const selected = showDetails ? selectedQuery.data : undefined;
   const jobs = jobsQuery.data?.jobs ?? [];
 
   useEffect(() => {
@@ -40,22 +48,42 @@ export function JobsPage(): ReactElement {
     patchFilters({ posted_from: undefined, posted_to: undefined });
   }
 
-  async function mark(status: "reviewing" | "applied" | "skipped" | "new"): Promise<void> {
+  function toggleDetails(): void {
+    setShowDetails((current) => {
+      const next = !current;
+      rememberDetailPreference(next);
+      return next;
+    });
+  }
+
+  async function mark(status: "reviewing" | "applied" | "skipped" | "new", note?: string): Promise<void> {
     if (!selectedJobId) {
       return;
     }
-    await updateStatus({ jobId: selectedJobId, status }).unwrap();
+    await updateStatus({ jobId: selectedJobId, status, note }).unwrap();
   }
 
   return (
-    <div className="page page-split">
+    <div className={`page ${showDetails ? "page-split" : "page-full"}`}>
       <section className="list-pane">
         <header className="page-header">
           <div>
             <span className="eyebrow">Jobs</span>
             <h1>Saved Queue</h1>
           </div>
-          <span className="count-badge">{jobs.length}</span>
+          <div className="header-actions">
+            <span className="count-badge">{jobs.length}</span>
+            <button
+              className="button"
+              type="button"
+              onClick={toggleDetails}
+              aria-pressed={!showDetails}
+              title={showDetails ? "Hide selected job" : "Show selected job"}
+            >
+              {showDetails ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+              {showDetails ? "Hide Details" : "Show Details"}
+            </button>
+          </div>
         </header>
 
         <div className="filter-row">
@@ -114,6 +142,19 @@ export function JobsPage(): ReactElement {
               onChange={(event) => patchFilters({ posted_to: event.target.value || undefined })}
             />
           </label>
+          <label>
+            <span>Sort</span>
+            <select
+              value={filters.sort || "best_fit"}
+              onChange={(event) => patchFilters({ sort: event.target.value as JobSort })}
+            >
+              {sortOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             className="button"
             type="button"
@@ -132,6 +173,7 @@ export function JobsPage(): ReactElement {
               <col className="jobs-col-title" />
               <col className="jobs-col-fit" />
               <col className="jobs-col-status" />
+              <col className="jobs-col-applied" />
               <col className="jobs-col-resume" />
             </colgroup>
             <thead>
@@ -139,6 +181,7 @@ export function JobsPage(): ReactElement {
                 <th>Title</th>
                 <th>Fit</th>
                 <th>Status</th>
+                <th>Applied</th>
                 <th>Resume</th>
               </tr>
             </thead>
@@ -169,6 +212,9 @@ export function JobsPage(): ReactElement {
                   <td>
                     <StatusPill value={job.status} />
                   </td>
+                  <td className="applied-cell">
+                    <span>{formatAppliedAt(job.applied_at)}</span>
+                  </td>
                   <td className="resume-cell" title={job.recommended_resume_name || ""}>
                     <span>{job.recommended_resume_name || "-"}</span>
                   </td>
@@ -180,7 +226,8 @@ export function JobsPage(): ReactElement {
         </div>
       </section>
 
-      <section className="detail-pane">
+      {showDetails ? (
+        <section className="detail-pane">
         {selectedQuery.isFetching && !selected ? (
           <p className="empty-state empty-state-panel">Loading job detail.</p>
         ) : selected ? (
@@ -196,6 +243,7 @@ export function JobsPage(): ReactElement {
               <span>{selected.workday_id || "-"}</span>
               <span>{selected.location || "-"}</span>
               <span>{selected.posting_date || "-"}</span>
+              <span>Applied {formatAppliedAt(selected.applied_at)}</span>
               <span>{selected.fit_score ?? "-"} / 100</span>
             </div>
             <div className="toolbar">
@@ -207,6 +255,18 @@ export function JobsPage(): ReactElement {
                 <Check size={16} aria-hidden="true" />
                 Applied
               </button>
+              {selected.status === "applied" ? (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void mark("new", "Moved back to the Apply queue from Jobs.")}
+                  disabled={updateState.isLoading}
+                  title="Move back to Apply queue"
+                >
+                  <Undo2 size={16} aria-hidden="true" />
+                  Unapply
+                </button>
+              ) : null}
               <button type="button" className="button" onClick={() => void mark("skipped")} disabled={updateState.isLoading}>
                 <X size={16} aria-hidden="true" />
                 Skip
@@ -217,6 +277,16 @@ export function JobsPage(): ReactElement {
                   Open
                 </a>
               ) : null}
+              <button
+                type="button"
+                className="button"
+                onClick={toggleDetails}
+                aria-pressed={!showDetails}
+                title="Hide selected job"
+              >
+                <EyeOff size={16} aria-hidden="true" />
+                Hide Details
+              </button>
             </div>
             <dl className="detail-list">
               <dt>Department</dt>
@@ -225,6 +295,8 @@ export function JobsPage(): ReactElement {
               <dd>{selected.hours || "-"}</dd>
               <dt>Pay</dt>
               <dd>{selected.pay_rate || "-"}</dd>
+              <dt>Applied</dt>
+              <dd>{formatAppliedAt(selected.applied_at)}</dd>
               <dt>Resume</dt>
               <dd>{selected.recommended_resume_path || "-"}</dd>
               <dt>Notes</dt>
@@ -236,7 +308,33 @@ export function JobsPage(): ReactElement {
         ) : (
           <p className="empty-state empty-state-panel">Select a job.</p>
         )}
-      </section>
+        </section>
+      ) : null}
     </div>
   );
+}
+
+function loadDetailPreference(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return window.localStorage.getItem(JOB_DETAIL_STORAGE_KEY) !== "false";
+}
+
+function rememberDetailPreference(showDetails: boolean): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(JOB_DETAIL_STORAGE_KEY, String(showDetails));
+  }
+}
+
+function formatAppliedAt(value: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?/);
+  if (!match) {
+    return value;
+  }
+  const [, year, month, day, hour, minute] = match;
+  return `${month}/${day}/${year} ${hour}:${minute}`;
 }

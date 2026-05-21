@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +56,7 @@ from src.storage.db import (
 
 
 LOCAL_CLIENT_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+JobSort = Literal["best_fit", "extracted", "posted_desc", "posted_asc"]
 
 
 def create_app(
@@ -207,10 +208,11 @@ def create_app(
         min_score: int | None = Query(default=None, ge=0, le=100),
         posted_from: date | None = Query(default=None),
         posted_to: date | None = Query(default=None),
+        sort: JobSort = Query(default="best_fit"),
         queue: bool = Query(default=False),
         limit: int = Query(default=100, ge=1, le=1_000),
     ) -> JobListResponse:
-        rows = _query_jobs(db_path, q, status, fit_label, min_score, posted_from, posted_to, queue, limit)
+        rows = _query_jobs(db_path, q, status, fit_label, min_score, posted_from, posted_to, sort, queue, limit)
         return JobListResponse(jobs=[_job_response_from_row(row, include_description=False) for row in rows])
 
     @app.get("/api/jobs/{job_id}", response_model=JobResponse)
@@ -375,6 +377,7 @@ def _query_jobs(
     min_score: int | None,
     posted_from: date | None,
     posted_to: date | None,
+    sort: JobSort,
     queue: bool,
     limit: int,
 ):
@@ -416,6 +419,7 @@ def _query_jobs(
             """
         )
         values.append(like)
+    order_sql = _job_order_sql(db_path, sort)
     values.append(limit)
     with get_connection(db_path) as connection:
         return connection.execute(
@@ -423,19 +427,67 @@ def _query_jobs(
             SELECT {JOB_LIST_COLUMNS_SQL}
             FROM jobs
             WHERE {" AND ".join(where)}
-            ORDER BY
+            ORDER BY {order_sql}
+            LIMIT ?;
+            """,
+            values,
+        ).fetchall()
+
+
+def _job_order_sql(db_path: Path, sort: JobSort) -> str:
+    posted_date_expression = f"({POSTING_DATE_SORT_SQL})"
+    posted_date_presence = f"CASE WHEN {posted_date_expression} = '' THEN 1 ELSE 0 END"
+    if sort == "extracted":
+        latest_order = _latest_scrape_job_order(db_path)
+        if latest_order:
+            cases = " ".join(f"WHEN {job_id} THEN {index}" for index, job_id in enumerate(latest_order))
+            return f"CASE id {cases} ELSE {len(latest_order)} END ASC, id ASC"
+        return "id ASC"
+    if sort == "posted_desc":
+        return f"{posted_date_presence} ASC, {posted_date_expression} DESC, id ASC"
+    if sort == "posted_asc":
+        return f"{posted_date_presence} ASC, {posted_date_expression} ASC, id ASC"
+    return f"""
               CASE fit_label
                 WHEN 'Strong Fit' THEN 0
                 WHEN 'Possible Fit' THEN 1
                 ELSE 2
               END ASC,
               COALESCE(fit_score, 0) DESC,
-              {POSTING_DATE_SORT_SQL} DESC,
+              {posted_date_expression} DESC,
               id ASC
-            LIMIT ?;
-            """,
-            values,
-        ).fetchall()
+            """
+
+
+def _latest_scrape_job_order(db_path: Path) -> list[int]:
+    with get_connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT result_json
+            FROM automation_runs
+            WHERE kind = 'scrape'
+              AND status = 'completed'
+              AND result_json IS NOT NULL
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1;
+            """
+        ).fetchone()
+    if row is None:
+        return []
+    result = _json_loads(row["result_json"])
+    if not isinstance(result, dict):
+        return []
+    ordered_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for value in result.get("job_ids", []):
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if job_id not in seen_ids:
+            ordered_ids.append(job_id)
+            seen_ids.add(job_id)
+    return ordered_ids
 
 
 def _job_response_from_row(row, include_description: bool) -> JobResponse:

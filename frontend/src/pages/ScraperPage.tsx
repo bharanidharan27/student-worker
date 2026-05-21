@@ -1,13 +1,16 @@
-import { Play, Radar } from "lucide-react";
+import { Loader2, Play, Radar } from "lucide-react";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { RunPanel } from "../components/RunPanel";
-import { useStartScrapeMutation } from "../services/api";
-import type { ScrapeRequest } from "../types";
+import { useListRunsQuery, useStartScrapeMutation } from "../services/api";
+import type { AutomationRun, ScrapeRequest } from "../types";
+import { isActiveRunStatus } from "../utils/runStatus";
+
+const SCRAPER_RUN_STORAGE_KEY = "student-work-applier:lastScrapeRunId";
 
 export function ScraperPage(): ReactElement {
-  const [runId, setRunId] = useState<number | null>(null);
+  const [runId, setRunId] = useState<number | null>(() => loadStoredScrapeRunId());
   const [form, setForm] = useState<ScrapeRequest>({
     limit: 10,
     headed: false,
@@ -18,9 +21,29 @@ export function ScraperPage(): ReactElement {
     debug_dump_dir: "outputs/debug"
   });
   const [startScrape, startState] = useStartScrapeMutation();
+  const runsQuery = useListRunsQuery(50, { pollingInterval: 2_000 });
+  const runs = runsQuery.data?.runs ?? [];
+  const activeRuns = useMemo(() => runs.filter((run) => isActiveRunStatus(run.status)), [runs]);
+  const latestScrapeRun = useMemo(() => runs.find((run) => run.kind === "scrape") ?? null, [runs]);
+  const activeScrapeRun = useMemo(
+    () => activeRuns.find((run) => run.kind === "scrape") ?? null,
+    [activeRuns]
+  );
+  const activeBrowserRun = activeRuns[0] ?? null;
+  const startBlocked = startState.isLoading || activeBrowserRun !== null;
+
+  useEffect(() => {
+    const nextRun = activeScrapeRun ?? latestScrapeRun;
+    if (!nextRun || runId === nextRun.id) {
+      return;
+    }
+    rememberScrapeRun(nextRun.id);
+    setRunId(nextRun.id);
+  }, [activeScrapeRun, latestScrapeRun, runId]);
 
   async function handleStart(): Promise<void> {
     const run = await startScrape(form).unwrap();
+    rememberScrapeRun(run.id);
     setRunId(run.id);
   }
 
@@ -35,13 +58,23 @@ export function ScraperPage(): ReactElement {
           className="button button-primary"
           type="button"
           onClick={() => void handleStart()}
-          disabled={startState.isLoading}
+          disabled={startBlocked}
           title="Start scrape"
         >
-          <Play size={16} aria-hidden="true" />
+          {startState.isLoading || activeScrapeRun ? (
+            <Loader2 className="spin" size={16} aria-hidden="true" />
+          ) : (
+            <Play size={16} aria-hidden="true" />
+          )}
           Start
         </button>
       </header>
+
+      {activeBrowserRun && activeBrowserRun.kind !== "scrape" ? (
+        <p className="notice notice-warn">
+          Browser worker is busy with {formatRunKind(activeBrowserRun)} #{activeBrowserRun.id}.
+        </p>
+      ) : null}
 
       <section className="panel">
         <header className="panel-header">
@@ -120,4 +153,26 @@ export function ScraperPage(): ReactElement {
       <RunPanel runId={runId} title="Scrape run" />
     </div>
   );
+}
+
+function loadStoredScrapeRunId(): number | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const value = window.localStorage.getItem(SCRAPER_RUN_STORAGE_KEY);
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function rememberScrapeRun(runId: number): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(SCRAPER_RUN_STORAGE_KEY, String(runId));
+  }
+}
+
+function formatRunKind(run: AutomationRun): string {
+  return run.kind.replaceAll("_", " ");
 }
