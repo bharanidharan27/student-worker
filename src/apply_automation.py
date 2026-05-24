@@ -136,6 +136,12 @@ def auto_apply_queue(
 
 
 def build_auto_apply_job(row) -> tuple[AutoApplyJob | None, str | None]:
+    if row["eligibility_status"] == "ineligible" and not bool(row["eligibility_override"]):
+        return (
+            None,
+            "Eligibility review marked this job ineligible. Override eligibility before applying.",
+        )
+
     url = row["url"]
     if not url:
         return None, "No Workday URL is stored for this job."

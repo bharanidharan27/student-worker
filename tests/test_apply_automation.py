@@ -65,6 +65,26 @@ def test_auto_apply_blocks_missing_resume_and_marks_reviewing(tmp_path: Path) ->
     assert "Auto apply blocked" in row["application_notes"]
 
 
+def test_auto_apply_blocks_ineligible_without_override(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text("{}", encoding="utf-8")
+    resume_path = tmp_path / "resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+    job_id = upsert_job(
+        _job("JR-ineligible", "Undergraduate Peer Mentor", resume_path).model_copy(
+            update={"eligibility_status": "ineligible", "eligibility_json": '{"status":"ineligible"}'}
+        ),
+        db_path,
+    )
+
+    result = auto_apply_job(job_id, db_path=db_path, auth_state_path=auth_path)
+
+    assert result.needs_review is True
+    assert result.ok is False
+    assert "ineligible" in result.message.lower()
+
+
 def test_auto_apply_uses_driver_and_marks_applied_on_submit(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.sqlite"
     auth_path = tmp_path / "auth.json"

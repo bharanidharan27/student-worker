@@ -95,6 +95,26 @@ export const consoleApi = createApi({
       }),
       invalidatesTags: (_result, _error, { jobId }) => ["Job", { type: "Job", id: jobId }]
     }),
+    updateEligibilityOverride: builder.mutation<Job, { jobId: number; eligibility_override: boolean; note?: string }>({
+      query: ({ jobId, eligibility_override, note }) => ({
+        url: `/jobs/${jobId}/eligibility-override`,
+        method: "PATCH",
+        body: { eligibility_override, note }
+      }),
+      invalidatesTags: (_result, _error, { jobId }) => ["Job", { type: "Job", id: jobId }]
+    }),
+    reviewJobEligibility: builder.mutation<AutomationRun, number>({
+      query: (jobId) => ({
+        url: `/jobs/${jobId}/eligibility/review`,
+        method: "POST",
+        body: {}
+      }),
+      invalidatesTags: (_result, _error, jobId) => ["Run", "Job", { type: "Job", id: jobId }]
+    }),
+    reviewAllEligibility: builder.mutation<AutomationRun, void>({
+      query: () => ({ url: "/eligibility/review", method: "POST", body: {} }),
+      invalidatesTags: ["Run", "Job"]
+    }),
     applyJob: builder.mutation<AutomationRun, { jobId: number; body: ApplyRequest }>({
       query: ({ jobId, body }) => ({
         url: `/apply/job/${jobId}`,
@@ -121,7 +141,10 @@ export const {
   useGetSessionStatusQuery,
   useListJobsQuery,
   useListRunsQuery,
+  useReviewAllEligibilityMutation,
+  useReviewJobEligibilityMutation,
   useStartLoginCaptureMutation,
   useStartScrapeMutation,
+  useUpdateEligibilityOverrideMutation,
   useUpdateJobStatusMutation
 } = consoleApi;

@@ -1,13 +1,26 @@
-import { Check, ExternalLink, Eye, EyeOff, Search, Undo2, X } from "lucide-react";
+import { skipToken } from "@reduxjs/toolkit/query";
+import { AlertTriangle, Check, ExternalLink, Eye, EyeOff, Loader2, Lock, RotateCw, Search, Undo2, Unlock, X } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 
+import { RunPanel } from "../components/RunPanel";
 import { StatusPill } from "../components/StatusPill";
-import { useGetJobQuery, useListJobsQuery, useUpdateJobStatusMutation } from "../services/api";
-import type { JobFilters, JobSort } from "../types";
+import {
+  useGetJobQuery,
+  useGetRunQuery,
+  useListJobsQuery,
+  useReviewAllEligibilityMutation,
+  useReviewJobEligibilityMutation,
+  useUpdateEligibilityOverrideMutation,
+  useUpdateJobStatusMutation
+} from "../services/api";
+import type { EligibilityAssessment, JobFilters, JobRequirement, JobSort } from "../types";
+import { isActiveRunStatus } from "../utils/runStatus";
 
 const statuses = ["", "new", "reviewing", "applied", "skipped"];
 const labels = ["", "Strong Fit", "Possible Fit", "Skip"];
+const eligibilityStatuses = ["", "eligible", "needs_review", "ineligible"];
+const requirementMatches = ["missing", "unknown", "met", "not_applicable"];
 const sortOptions: Array<{ label: string; value: JobSort }> = [
   { label: "Best fit", value: "best_fit" },
   { label: "Extracted order", value: "extracted" },
@@ -20,12 +33,20 @@ export function JobsPage(): ReactElement {
   const [filters, setFilters] = useState<JobFilters>({ limit: 100, sort: "best_fit" });
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [showDetails, setShowDetails] = useState<boolean>(() => loadDetailPreference());
+  const [eligibilityRunId, setEligibilityRunId] = useState<number | null>(null);
   const jobsQuery = useListJobsQuery(filters, { pollingInterval: 5_000 });
   const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null || !showDetails });
+  const eligibilityRunQuery = useGetRunQuery(eligibilityRunId ?? skipToken, {
+    pollingInterval: eligibilityRunId ? 2_000 : 0
+  });
   const [updateStatus, updateState] = useUpdateJobStatusMutation();
+  const [updateEligibilityOverride, overrideState] = useUpdateEligibilityOverrideMutation();
+  const [reviewJobEligibility, reviewJobState] = useReviewJobEligibilityMutation();
+  const [reviewAllEligibility, reviewAllState] = useReviewAllEligibilityMutation();
 
   const selected = showDetails ? selectedQuery.data : undefined;
   const jobs = jobsQuery.data?.jobs ?? [];
+  const eligibilityRunActive = isActiveRunStatus(eligibilityRunQuery.data?.status);
 
   useEffect(() => {
     if (jobs.length === 0 && selectedJobId !== null) {
@@ -39,6 +60,16 @@ export function JobsPage(): ReactElement {
       setSelectedJobId(jobs[0].id);
     }
   }, [jobs, selectedJobId]);
+
+  useEffect(() => {
+    if (!eligibilityRunQuery.data || isActiveRunStatus(eligibilityRunQuery.data.status)) {
+      return;
+    }
+    void jobsQuery.refetch();
+    if (selectedJobId !== null && showDetails) {
+      void selectedQuery.refetch();
+    }
+  }, [eligibilityRunQuery.data, jobsQuery, selectedJobId, selectedQuery, showDetails]);
 
   function patchFilters(next: Partial<JobFilters>): void {
     setFilters((current) => ({ ...current, ...next }));
@@ -63,6 +94,31 @@ export function JobsPage(): ReactElement {
     await updateStatus({ jobId: selectedJobId, status, note }).unwrap();
   }
 
+  async function toggleEligibilityOverride(): Promise<void> {
+    if (!selected) {
+      return;
+    }
+    const next = !selected.eligibility_override;
+    await updateEligibilityOverride({
+      jobId: selected.id,
+      eligibility_override: next,
+      note: next ? "Eligibility override enabled from Jobs page." : "Eligibility override cleared from Jobs page."
+    }).unwrap();
+  }
+
+  async function startAllEligibilityReview(): Promise<void> {
+    const run = await reviewAllEligibility().unwrap();
+    setEligibilityRunId(run.id);
+  }
+
+  async function startSelectedEligibilityReview(): Promise<void> {
+    if (!selected) {
+      return;
+    }
+    const run = await reviewJobEligibility(selected.id).unwrap();
+    setEligibilityRunId(run.id);
+  }
+
   return (
     <div className={`page ${showDetails ? "page-split" : "page-full"}`}>
       <section className="list-pane">
@@ -73,6 +129,20 @@ export function JobsPage(): ReactElement {
           </div>
           <div className="header-actions">
             <span className="count-badge">{jobs.length}</span>
+            <button
+              className="button"
+              type="button"
+              onClick={() => void startAllEligibilityReview()}
+              disabled={reviewAllState.isLoading || eligibilityRunActive}
+              title="Review eligibility for all saved jobs"
+            >
+              {reviewAllState.isLoading || eligibilityRunActive ? (
+                <Loader2 className="spin" size={16} aria-hidden="true" />
+              ) : (
+                <RotateCw size={16} aria-hidden="true" />
+              )}
+              Review All
+            </button>
             <button
               className="button"
               type="button"
@@ -123,6 +193,16 @@ export function JobsPage(): ReactElement {
               patchFilters({ min_score: event.target.value ? Number(event.target.value) : undefined })
             }
           />
+          <select
+            value={filters.eligibility_status || ""}
+            onChange={(event) => patchFilters({ eligibility_status: event.target.value })}
+          >
+            {eligibilityStatuses.map((value) => (
+              <option key={value || "all"} value={value}>
+                {value ? formatEligibility(value) : "All eligibility"}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="date-filter-row">
@@ -172,17 +252,19 @@ export function JobsPage(): ReactElement {
             <colgroup>
               <col className="jobs-col-title" />
               <col className="jobs-col-fit" />
+              <col className="jobs-col-eligibility" />
               <col className="jobs-col-status" />
-              <col className="jobs-col-applied" />
-              <col className="jobs-col-resume" />
+              {!showDetails ? <col className="jobs-col-applied" /> : null}
+              {!showDetails ? <col className="jobs-col-resume" /> : null}
             </colgroup>
             <thead>
               <tr>
                 <th>Title</th>
                 <th>Fit</th>
+                <th>Eligibility</th>
                 <th>Status</th>
-                <th>Applied</th>
-                <th>Resume</th>
+                {!showDetails ? <th>Applied</th> : null}
+                {!showDetails ? <th>Resume</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -209,15 +291,25 @@ export function JobsPage(): ReactElement {
                     <strong>{job.fit_score ?? "-"}</strong>
                     <span>{job.fit_label || "-"}</span>
                   </td>
+                  <td className="eligibility-cell">
+                    <span className={`eligibility-badge eligibility-badge--${job.eligibility_status || "none"}`}>
+                      {formatEligibility(job.eligibility_status)}
+                    </span>
+                    <span>{eligibilitySnapshot(job.eligibility, job.eligibility_override)}</span>
+                  </td>
                   <td>
                     <StatusPill value={job.status} />
                   </td>
-                  <td className="applied-cell">
-                    <span>{formatAppliedAt(job.applied_at)}</span>
-                  </td>
-                  <td className="resume-cell" title={job.recommended_resume_name || ""}>
-                    <span>{job.recommended_resume_name || "-"}</span>
-                  </td>
+                  {!showDetails ? (
+                    <td className="applied-cell">
+                      <span>{formatAppliedAt(job.applied_at)}</span>
+                    </td>
+                  ) : null}
+                  {!showDetails ? (
+                    <td className="resume-cell" title={job.recommended_resume_name || ""}>
+                      <span>{job.recommended_resume_name || "-"}</span>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
@@ -245,6 +337,8 @@ export function JobsPage(): ReactElement {
               <span>{selected.posting_date || "-"}</span>
               <span>Applied {formatAppliedAt(selected.applied_at)}</span>
               <span>{selected.fit_score ?? "-"} / 100</span>
+              <span>{formatEligibility(selected.eligibility_status)}</span>
+              {selected.eligibility_override ? <span>Override</span> : null}
             </div>
             <div className="toolbar">
               <button type="button" className="button" onClick={() => void mark("reviewing")} disabled={updateState.isLoading}>
@@ -271,6 +365,32 @@ export function JobsPage(): ReactElement {
                 <X size={16} aria-hidden="true" />
                 Skip
               </button>
+              <button
+                type="button"
+                className="button"
+                onClick={() => void startSelectedEligibilityReview()}
+                disabled={reviewJobState.isLoading || eligibilityRunActive}
+                title="Re-review eligibility for selected job"
+              >
+                {reviewJobState.isLoading || eligibilityRunActive ? (
+                  <Loader2 className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <RotateCw size={16} aria-hidden="true" />
+                )}
+                Eligibility
+              </button>
+              {selected.eligibility_status === "ineligible" || selected.eligibility_override ? (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void toggleEligibilityOverride()}
+                  disabled={overrideState.isLoading}
+                  title={selected.eligibility_override ? "Clear eligibility override" : "Allow apply despite eligibility review"}
+                >
+                  {selected.eligibility_override ? <Lock size={16} aria-hidden="true" /> : <Unlock size={16} aria-hidden="true" />}
+                  {selected.eligibility_override ? "Block" : "Allow"}
+                </button>
+              ) : null}
               {selected.url ? (
                 <a className="button" href={selected.url} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} aria-hidden="true" />
@@ -302,6 +422,7 @@ export function JobsPage(): ReactElement {
               <dt>Notes</dt>
               <dd>{selected.application_notes || "-"}</dd>
             </dl>
+            <EligibilityPanel eligibility={selected.eligibility} override={selected.eligibility_override} />
             <h3>Description</h3>
             <pre className="description-box">{selected.raw_description || "No description stored."}</pre>
           </>
@@ -309,6 +430,11 @@ export function JobsPage(): ReactElement {
           <p className="empty-state empty-state-panel">Select a job.</p>
         )}
         </section>
+      ) : null}
+      {eligibilityRunId ? (
+        <div className="run-panel-wide">
+          <RunPanel runId={eligibilityRunId} title="Eligibility run" />
+        </div>
       ) : null}
     </div>
   );
@@ -325,6 +451,175 @@ function rememberDetailPreference(showDetails: boolean): void {
   if (typeof window !== "undefined") {
     window.localStorage.setItem(JOB_DETAIL_STORAGE_KEY, String(showDetails));
   }
+}
+
+interface EligibilityPanelProps {
+  eligibility: EligibilityAssessment | null;
+  override: boolean;
+}
+
+function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): ReactElement {
+  if (!eligibility) {
+    return (
+      <div className="eligibility-box">
+        <h3>Eligibility</h3>
+        <p className="empty-state">Not reviewed yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="eligibility-box">
+      <header className="section-header">
+        <div>
+          <h3>Eligibility</h3>
+          <span className="section-subtitle">
+            {eligibility.llm_used ? `${eligibility.provider || "LLM"} review` : "Local rules review"}
+          </span>
+        </div>
+        <span className={`eligibility-badge eligibility-badge--${eligibility.status}`}>
+          {formatEligibility(eligibility.status)}
+        </span>
+      </header>
+      {override ? (
+        <p className="notice notice-warn">
+          <AlertTriangle size={16} aria-hidden="true" />
+          Manual override is enabled for this job.
+        </p>
+      ) : null}
+      <p className="eligibility-summary">{eligibility.summary}</p>
+      <div className="eligibility-review-grid">
+        <CompactList title="Blockers" values={eligibility.blockers} tone="bad" />
+        <CompactList title="Warnings" values={eligibility.warnings} tone="warn" />
+        <CompactList
+          title="Resume Changes"
+          values={eligibility.resume_suggestions.map((item) => `${item.suggestion} Evidence: ${item.evidence}`)}
+          tone="neutral"
+        />
+        <CompactList
+          title="Non-Resume Actions"
+          values={eligibility.non_resume_actions.map((item) => item.description)}
+          tone="neutral"
+        />
+      </div>
+      <RequirementsByMatch requirements={eligibility.requirements} />
+    </div>
+  );
+}
+
+interface CompactListProps {
+  tone?: "bad" | "neutral" | "warn";
+  title: string;
+  values: string[];
+}
+
+function CompactList({ title, values, tone = "neutral" }: CompactListProps): ReactElement | null {
+  if (!values.length) {
+    return null;
+  }
+  return (
+    <section className={`compact-list compact-list--${tone}`}>
+      <h4>{title}</h4>
+      <ul>
+        {values.map((value) => (
+          <li key={value}>{value}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+interface RequirementsByMatchProps {
+  requirements: JobRequirement[];
+}
+
+function RequirementsByMatch({ requirements }: RequirementsByMatchProps): ReactElement | null {
+  if (!requirements.length) {
+    return null;
+  }
+  const grouped = groupRequirements(requirements);
+  return (
+    <section className="requirements-panel">
+      <header className="section-header">
+        <div>
+          <h3>Requirements</h3>
+          <span className="section-subtitle">{requirements.length} extracted</span>
+        </div>
+      </header>
+      <div className="requirements-groups">
+        {requirementMatches.map((match) => {
+          const items = grouped[match] ?? [];
+          if (!items.length) {
+            return null;
+          }
+          return (
+            <details
+              key={match}
+              className={`requirement-group requirement-group--${match}`}
+              open={match === "missing" || match === "unknown"}
+            >
+              <summary>
+                <span>{formatRequirementMatch(match)}</span>
+                <strong>{items.length}</strong>
+              </summary>
+              <div className="requirement-card-list">
+                {items.map((requirement, index) => (
+                  <article className="requirement-card" key={`${requirement.match}-${requirement.text}-${index}`}>
+                    <div className="requirement-card-header">
+                      <span>{requirement.priority}</span>
+                      <span>{requirement.category}</span>
+                    </div>
+                    <p>{requirement.text}</p>
+                    {requirement.source_quote ? <blockquote>{requirement.source_quote}</blockquote> : null}
+                    {requirement.evidence.length ? (
+                      <small>{requirement.evidence.join(" ")}</small>
+                    ) : requirement.notes ? (
+                      <small>{requirement.notes}</small>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function groupRequirements(requirements: JobRequirement[]): Record<string, JobRequirement[]> {
+  return requirements.reduce<Record<string, JobRequirement[]>>((grouped, requirement) => {
+    const key = requirement.match || "unknown";
+    grouped[key] = grouped[key] ?? [];
+    grouped[key].push(requirement);
+    return grouped;
+  }, {});
+}
+
+function eligibilitySnapshot(eligibility: EligibilityAssessment | null, override: boolean): string {
+  if (override) {
+    return "manual override";
+  }
+  if (!eligibility) {
+    return "-";
+  }
+  const missing = eligibility.requirements.filter((requirement) => requirement.match === "missing").length;
+  const unknown = eligibility.requirements.filter((requirement) => requirement.match === "unknown").length;
+  if (missing || unknown) {
+    return [missing ? `${missing} missing` : "", unknown ? `${unknown} unknown` : ""].filter(Boolean).join(" | ");
+  }
+  return `${eligibility.requirements.length} checked`;
+}
+
+function formatRequirementMatch(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function formatEligibility(value: string | null): string {
+  if (!value) {
+    return "Not reviewed";
+  }
+  return value.replaceAll("_", " ");
 }
 
 function formatAppliedAt(value: string | null): string {

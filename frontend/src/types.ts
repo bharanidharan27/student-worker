@@ -61,6 +61,9 @@ export interface Job {
   recommended_resume_type: string | null;
   recommended_resume_name: string | null;
   recommended_resume_path: string | null;
+  eligibility_status: string | null;
+  eligibility: EligibilityAssessment | null;
+  eligibility_override: boolean;
   status: string | null;
   application_notes: string | null;
   applied_at: string | null;
@@ -71,12 +74,52 @@ export interface JobFilters {
   q?: string;
   status?: string;
   fit_label?: string;
+  eligibility_status?: string;
   min_score?: number;
   posted_from?: string;
   posted_to?: string;
   sort?: JobSort;
   queue?: boolean;
   limit?: number;
+}
+
+export interface JobRequirement {
+  text: string;
+  priority: string;
+  category: string;
+  source_quote: string;
+  confidence: number;
+  match: string;
+  evidence: string[];
+  notes: string | null;
+}
+
+export interface ResumeSuggestion {
+  requirement: string;
+  suggestion: string;
+  evidence: string;
+  resume_section: string | null;
+  priority: string;
+}
+
+export interface NonResumeAction {
+  action_type: string;
+  description: string;
+  priority: string;
+  source_quote: string | null;
+}
+
+export interface EligibilityAssessment {
+  status: string;
+  summary: string;
+  requirements: JobRequirement[];
+  blockers: string[];
+  warnings: string[];
+  resume_suggestions: ResumeSuggestion[];
+  non_resume_actions: NonResumeAction[];
+  llm_used: boolean;
+  provider: string | null;
+  model: string | null;
 }
 
 export interface ScrapeRequest {

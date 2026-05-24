@@ -300,6 +300,10 @@ function QueueJobRow({
         <span>
           {job.fit_score ?? "-"} / 100 | {job.recommended_resume_name || "-"}
         </span>
+        <span>
+          Eligibility: {formatEligibility(job.eligibility_status)}
+          {job.eligibility_override ? " | override" : ""}
+        </span>
       </div>
       <StatusPill value={job.status} />
       <div className="queue-actions">
@@ -330,6 +334,13 @@ function QueueJobRow({
       </div>
     </article>
   );
+}
+
+function formatEligibility(value: string | null): string {
+  if (!value) {
+    return "not reviewed";
+  }
+  return value.replaceAll("_", " ");
 }
 
 function getRunJobId(run: AutomationRun): number | null {

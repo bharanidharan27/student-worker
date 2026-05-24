@@ -8,6 +8,7 @@ user:
   phone: "602-696-6398"
   location: "Tempe, AZ"
   linkedin: "linkedin.com/in/bharanidharan-maheswaran/"
+  redacted_profile_path: "data/applicant_profile.yaml"
 
 generation:
   output_format: "docx"
@@ -18,3 +19,8 @@ scoring:
   strong_fit_threshold: 80
   possible_fit_threshold: 60
 
+llm:
+  provider: "gemini"
+  model: "gemini-2.5-flash"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+  env_key: "LLM_API_KEY"

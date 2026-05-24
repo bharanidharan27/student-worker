@@ -5,6 +5,7 @@ __pycache__/
 venv/
 data/*
 !data/.gitkeep
+!data/applicant_profile.example.yaml
 outputs/
 playwright/.auth/
 *.log

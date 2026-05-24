@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from src.storage.models import ApplicationStatus
 
 
-RunKind = Literal["login_capture", "scrape", "apply_job", "apply_queue"]
+RunKind = Literal["login_capture", "scrape", "apply_job", "apply_queue", "eligibility_review"]
 RunStatus = Literal[
     "queued",
     "running",
@@ -57,6 +57,10 @@ class ScrapeRequest(BaseModel):
     debug_dump_dir: str | None = None
 
 
+class EligibilityReviewRequest(BaseModel):
+    db_path: str | None = None
+
+
 class ApplyJobRequest(BaseModel):
     submit: bool = False
     confirm_submit: bool = False
@@ -76,6 +80,11 @@ class ApplyQueueRequest(ApplyJobRequest):
 
 class UpdateJobStatusRequest(BaseModel):
     status: ApplicationStatus
+    note: str | None = None
+
+
+class UpdateEligibilityOverrideRequest(BaseModel):
+    eligibility_override: bool
     note: str | None = None
 
 
@@ -133,6 +142,9 @@ class JobResponse(BaseModel):
     recommended_resume_type: str | None = None
     recommended_resume_name: str | None = None
     recommended_resume_path: str | None = None
+    eligibility_status: str | None = None
+    eligibility: dict[str, Any] | None = None
+    eligibility_override: bool = False
     status: str | None = None
     application_notes: str | None = None
     applied_at: str | None = None
