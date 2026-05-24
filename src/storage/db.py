@@ -43,6 +43,9 @@ JOB_LIST_COLUMNS_SQL = """
   recommended_resume_type,
   recommended_resume_name,
   recommended_resume_path,
+  eligibility_status,
+  eligibility_json,
+  eligibility_override,
   status,
   application_notes,
   applied_at,
@@ -78,6 +81,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   recommended_resume_type TEXT,
   recommended_resume_name TEXT,
   recommended_resume_path TEXT,
+  eligibility_status TEXT,
+  eligibility_json TEXT,
+  eligibility_override INTEGER DEFAULT 0,
   status TEXT DEFAULT 'new',
   application_notes TEXT,
   applied_at TIMESTAMP,
@@ -136,6 +142,9 @@ JOBS_COLUMN_MIGRATIONS = {
     "application_notes": "ALTER TABLE jobs ADD COLUMN application_notes TEXT;",
     "applied_at": "ALTER TABLE jobs ADD COLUMN applied_at TIMESTAMP;",
     "last_action_at": "ALTER TABLE jobs ADD COLUMN last_action_at TIMESTAMP;",
+    "eligibility_status": "ALTER TABLE jobs ADD COLUMN eligibility_status TEXT;",
+    "eligibility_json": "ALTER TABLE jobs ADD COLUMN eligibility_json TEXT;",
+    "eligibility_override": "ALTER TABLE jobs ADD COLUMN eligibility_override INTEGER DEFAULT 0;",
 }
 
 
@@ -191,14 +200,16 @@ def upsert_job(job: JobRecord, db_path: Path = DEFAULT_DB_PATH) -> int:
               workday_id, title, department, location, pay_rate, hours,
               posting_date, deadline, url, raw_description, parsed_json,
               fit_score, fit_label, job_family, recommended_resume_type,
-              recommended_resume_name, recommended_resume_path, status,
-              application_notes, applied_at, last_action_at
+              recommended_resume_name, recommended_resume_path,
+              eligibility_status, eligibility_json, eligibility_override,
+              status, application_notes, applied_at, last_action_at
             ) VALUES (
               :workday_id, :title, :department, :location, :pay_rate, :hours,
               :posting_date, :deadline, :url, :raw_description, :parsed_json,
               :fit_score, :fit_label, :job_family, :recommended_resume_type,
-              :recommended_resume_name, :recommended_resume_path, :status,
-              :application_notes, :applied_at, :last_action_at
+              :recommended_resume_name, :recommended_resume_path,
+              :eligibility_status, :eligibility_json, :eligibility_override,
+              :status, :application_notes, :applied_at, :last_action_at
             )
             ON CONFLICT(workday_id) DO UPDATE SET
               title = excluded.title,
@@ -217,6 +228,12 @@ def upsert_job(job: JobRecord, db_path: Path = DEFAULT_DB_PATH) -> int:
               recommended_resume_type = excluded.recommended_resume_type,
               recommended_resume_name = excluded.recommended_resume_name,
               recommended_resume_path = excluded.recommended_resume_path,
+              eligibility_status = excluded.eligibility_status,
+              eligibility_json = excluded.eligibility_json,
+              eligibility_override = CASE
+                WHEN jobs.eligibility_override = 1 THEN jobs.eligibility_override
+                ELSE excluded.eligibility_override
+              END,
               status = CASE
                 WHEN jobs.status IN ('reviewing', 'applied', 'skipped') AND excluded.status = 'new'
                 THEN jobs.status
@@ -476,6 +493,10 @@ def list_apply_queue(db_path: Path = DEFAULT_DB_PATH, limit: int = 10) -> list[s
             SELECT {JOB_LIST_COLUMNS_SQL}
             FROM jobs
             WHERE COALESCE(status, 'new') NOT IN (?, ?)
+              AND (
+                COALESCE(eligibility_status, '') != 'ineligible'
+                OR COALESCE(eligibility_override, 0) = 1
+              )
             ORDER BY
               CASE fit_label
                 WHEN 'Strong Fit' THEN 0
@@ -542,6 +563,56 @@ def update_job_status(
     return cursor.rowcount > 0
 
 
+def update_job_eligibility_override(
+    job_id: int,
+    override: bool,
+    note: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET
+              eligibility_override = ?,
+              application_notes = CASE
+                WHEN ? IS NULL THEN application_notes
+                ELSE ?
+              END,
+              last_action_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (1 if override else 0, note, note, job_id),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
+def update_job_eligibility(
+    job_id: int,
+    eligibility_status: str,
+    eligibility_json: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET
+              eligibility_status = ?,
+              eligibility_json = ?,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (eligibility_status, eligibility_json, job_id),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
 def execute_schema(db_path: Path = DEFAULT_DB_PATH) -> Iterable[str]:
     init_db(db_path)
     with get_connection(db_path) as connection:
@@ -599,7 +670,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(
             "id | workday_id | title | location | posting_date | fit | label | "
-            "family | resume_type | resume_name | resume_path | status"
+            "family | resume_type | resume_name | resume_path | eligibility | "
+            "eligibility_override | status"
         )
         for row in rows:
             print(
@@ -616,6 +688,8 @@ def main(argv: list[str] | None = None) -> int:
                         row["recommended_resume_type"] or "",
                         row["recommended_resume_name"] or "",
                         row["recommended_resume_path"] or "",
+                        row["eligibility_status"] or "",
+                        str(bool(row["eligibility_override"])),
                         row["status"] or "",
                     ]
                 )

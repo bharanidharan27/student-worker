@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from src.eligibility.assessor import assess_job_eligibility
+from src.eligibility.models import EligibilityAssessment
 from src.matching.fit_scorer import score_fit
 from src.scraping.job_detail_parser import parse_job_description
 from src.storage.db import DEFAULT_DB_PATH, insert_generated_document, upsert_job
@@ -27,6 +29,7 @@ class ManualReportResult:
     output_path: Path
     parsed_job: ParsedJob
     fit_result: FitResult
+    eligibility: EligibilityAssessment
 
 
 def build_manual_report(
@@ -40,6 +43,7 @@ def build_manual_report(
 
     parsed_job = parse_job_description(cleaned)
     fit_result = score_fit(parsed_job, cleaned)
+    eligibility = assess_job_eligibility(parsed_job, cleaned)
     workday_id = manual_workday_id(cleaned)
     title = parsed_job.title or f"Manual Job {workday_id[-8:]}"
 
@@ -59,6 +63,8 @@ def build_manual_report(
         recommended_resume_type=fit_result.recommended_resume_type,
         recommended_resume_name=fit_result.recommended_resume_name,
         recommended_resume_path=fit_result.recommended_resume_path,
+        eligibility_status=eligibility.status,
+        eligibility_json=eligibility.model_dump_json(indent=2),
         status="new",
     )
     job_id = upsert_job(job, db_path=db_path)
@@ -71,6 +77,7 @@ def build_manual_report(
         job_id=job_id,
         parsed_job=parsed_job,
         fit_result=fit_result,
+        eligibility=eligibility,
         raw_description=cleaned,
     )
     write_text(output_path, report)
@@ -89,6 +96,7 @@ def build_manual_report(
         output_path=output_path,
         parsed_job=parsed_job,
         fit_result=fit_result,
+        eligibility=eligibility,
     )
 
 
@@ -108,6 +116,7 @@ def render_markdown_report(
     job_id: int,
     parsed_job: ParsedJob,
     fit_result: FitResult,
+    eligibility: EligibilityAssessment,
     raw_description: str,
 ) -> str:
     lines = [
@@ -129,6 +138,7 @@ def render_markdown_report(
         f"- Recommended Resume Type: {fit_result.recommended_resume_type}",
         f"- Recommended Resume: {_value(fit_result.recommended_resume_name)}",
         f"- Recommended Resume Path: {_value(fit_result.recommended_resume_path)}",
+        f"- Eligibility: {eligibility.status}",
         "",
         "## Reasons",
         "",
@@ -137,6 +147,30 @@ def render_markdown_report(
         "## Gaps",
         "",
         _markdown_list(fit_result.gaps),
+        "",
+        "## Eligibility Review",
+        "",
+        eligibility.summary,
+        "",
+        "### Blockers",
+        "",
+        _markdown_list(eligibility.blockers),
+        "",
+        "### Warnings",
+        "",
+        _markdown_list(eligibility.warnings),
+        "",
+        "### Resume Changes",
+        "",
+        _markdown_suggestions(eligibility.resume_suggestions),
+        "",
+        "### Non-Resume Actions",
+        "",
+        _markdown_actions(eligibility.non_resume_actions),
+        "",
+        "### Requirements",
+        "",
+        _markdown_requirements(eligibility.requirements),
         "",
         "## Parsed Fields",
         "",
@@ -178,6 +212,35 @@ def _markdown_list(values: list[str]) -> str:
     if not values:
         return "Not found."
     return "\n".join(f"- {value}" for value in values)
+
+
+def _markdown_requirements(values) -> str:
+    if not values:
+        return "Not found."
+    return "\n".join(
+        f"- [{value.match}] {value.priority} {value.category}: {value.text}"
+        + (f" Quote: {value.source_quote}" if value.source_quote else "")
+        for value in values
+    )
+
+
+def _markdown_suggestions(values) -> str:
+    if not values:
+        return "Not found."
+    return "\n".join(
+        f"- {value.suggestion} Evidence: {value.evidence}"
+        for value in values
+    )
+
+
+def _markdown_actions(values) -> str:
+    if not values:
+        return "Not found."
+    return "\n".join(
+        f"- [{value.priority}] {value.description}"
+        + (f" Quote: {value.source_quote}" if value.source_quote else "")
+        for value in values
+    )
 
 
 def _value(value: str | None) -> str:

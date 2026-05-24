@@ -1,0 +1,39 @@
+degree_level: "masters"
+program: "Computer Science"
+enrolled_at_asu: true
+available_hours_per_week:
+federal_work_study: false
+work_authorized: true
+age_18_or_older: true
+preferred_locations:
+  - "Tempe"
+  - "Remote"
+  - "Hybrid"
+technologies:
+  - "Python"
+  - "Java"
+  - "React"
+  - "SQL"
+  - "API"
+  - "Automation"
+  - "Machine Learning"
+  - "Data Analysis"
+  - "Microsoft Office"
+  - "Excel"
+  - "Google Workspace"
+experience_domains:
+  - "software development"
+  - "technical support"
+  - "data analysis"
+  - "documentation"
+  - "student support"
+  - "office administration"
+  - "customer service"
+certifications: []
+portfolio_links: []
+resume_keywords:
+  - "Python"
+  - "SQL"
+  - "React"
+  - "customer service"
+hard_constraints: []

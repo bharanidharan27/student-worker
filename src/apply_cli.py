@@ -16,6 +16,7 @@ from src.storage.db import (
     DEFAULT_DB_PATH,
     get_job_by_id,
     list_apply_queue,
+    update_job_eligibility_override,
     update_job_status,
 )
 
@@ -45,7 +46,7 @@ def render_picker_menu(rows: list[sqlite3.Row]) -> str:
         lines.append(f"  [{index}] {title}")
         lines.append(
             f"      fit: {fit_text} | location: {location} |"
-            f" posted: {posted} | status: {status}"
+            f" posted: {posted} | status: {status} | eligibility: {row['eligibility_status'] or 'not reviewed'}"
         )
     lines.append("")
     lines.append("Type the number of the job to apply for, or 'q' to quit.")
@@ -136,7 +137,7 @@ def render_queue(rows: list[sqlite3.Row]) -> str:
         return "No actionable jobs found."
 
     lines = [
-        "id | title | fit | label | family | posting_date | status | resume",
+        "id | title | fit | label | family | posting_date | status | eligibility | resume",
     ]
     for row in rows:
         lines.append(
@@ -149,6 +150,7 @@ def render_queue(rows: list[sqlite3.Row]) -> str:
                     row["job_family"] or "",
                     row["posting_date"] or "",
                     row["status"] or "",
+                    row["eligibility_status"] or "",
                     row["recommended_resume_name"] or "",
                 ]
             )
@@ -160,6 +162,7 @@ def render_apply_packet(row: sqlite3.Row) -> str:
     resume_path = row["recommended_resume_path"] or "Not found"
     workday_url = row["url"] or "Not stored. Search Workday by the Workday ID."
     notes = row["application_notes"] or "None"
+    eligibility = _eligibility_packet(row)
 
     return "\n".join(
         [
@@ -175,6 +178,7 @@ def render_apply_packet(row: sqlite3.Row) -> str:
             f"Status: {row['status'] or 'new'}",
             f"Recommended Resume: {row['recommended_resume_name'] or 'Not found'}",
             f"Resume Path: {resume_path}",
+            eligibility,
             f"Workday URL: {workday_url}",
             f"Notes: {notes}",
             "",
@@ -220,6 +224,24 @@ def mark_status(
     if not updated:
         return False, f"No job found with local id {job_id}."
     return True, f"Marked job {job_id} as {status}."
+
+
+def set_eligibility_override(
+    job_id: int,
+    override: bool,
+    note: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> tuple[bool, str]:
+    message = note or (
+        "Eligibility override enabled from CLI."
+        if override
+        else "Eligibility override cleared from CLI."
+    )
+    updated = update_job_eligibility_override(job_id, override, note=message, db_path=db_path)
+    if not updated:
+        return False, f"No job found with local id {job_id}."
+    state = "enabled" if override else "cleared"
+    return True, f"Eligibility override {state} for job {job_id}."
 
 
 def next_job_id(
@@ -355,6 +377,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mark-reviewing", type=int, metavar="JOB_ID", help="Mark a job as reviewing.")
     parser.add_argument("--mark-applied", type=int, metavar="JOB_ID", help="Mark a job as applied.")
     parser.add_argument("--mark-skipped", type=int, metavar="JOB_ID", help="Mark a job as skipped.")
+    parser.add_argument(
+        "--override-eligibility",
+        type=int,
+        metavar="JOB_ID",
+        help="Allow an ineligible job into the apply queue after manual review.",
+    )
+    parser.add_argument(
+        "--clear-eligibility-override",
+        type=int,
+        metavar="JOB_ID",
+        help="Remove a previous eligibility override.",
+    )
     parser.add_argument("--note", help="Optional note for a status update.")
     parser.add_argument("--limit", type=int, default=10, help="Limit for --queue.")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH, help="SQLite database path.")
@@ -395,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
         args.mark_reviewing is not None,
         args.mark_applied is not None,
         args.mark_skipped is not None,
+        args.override_eligibility is not None,
+        args.clear_eligibility_override is not None,
     ]
     if sum(1 for selected in selected_actions if selected) != 1:
         parser.error("Choose exactly one action.")
@@ -479,8 +515,24 @@ def main(argv: list[str] | None = None) -> int:
             print(message, file=sys.stdout if ok else sys.stderr)
             return 0 if ok else 1
 
+    override_actions = [
+        (args.override_eligibility, True),
+        (args.clear_eligibility_override, False),
+    ]
+    for job_id, override in override_actions:
+        if job_id is not None:
+            ok, message = set_eligibility_override(job_id, override, note=args.note, db_path=args.db_path)
+            print(message, file=sys.stdout if ok else sys.stderr)
+            return 0 if ok else 1
+
     parser.print_help()
     return 0
+
+
+def _eligibility_packet(row) -> str:
+    status = row["eligibility_status"] or "not reviewed"
+    override = "yes" if row["eligibility_override"] else "no"
+    return f"Eligibility: {status} | Override: {override}"
 
 
 if __name__ == "__main__":

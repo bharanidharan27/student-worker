@@ -168,8 +168,33 @@ def test_init_db_migrates_old_jobs_table_without_losing_rows(tmp_path: Path) -> 
         "application_notes",
         "applied_at",
         "last_action_at",
+        "eligibility_status",
+        "eligibility_json",
+        "eligibility_override",
     }.issubset(columns)
     assert row_count == 1
+
+
+def test_ineligible_jobs_are_hidden_from_apply_queue_until_override(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job = JobRecord(
+        workday_id="JR-ineligible",
+        title="Undergraduate Peer Mentor",
+        raw_description="Must be an undergraduate student.",
+        fit_score=95,
+        fit_label="Strong Fit",
+        eligibility_status="ineligible",
+        eligibility_json='{"status":"ineligible"}',
+    )
+
+    job_id = upsert_job(job, db_path)
+    assert list_jobs(db_path, limit=1)[0]["eligibility_status"] == "ineligible"
+
+    from src.storage.db import list_apply_queue, update_job_eligibility_override
+
+    assert list_apply_queue(db_path, limit=10) == []
+    assert update_job_eligibility_override(job_id, True, db_path=db_path)
+    assert [row["id"] for row in list_apply_queue(db_path, limit=10)] == [job_id]
 
 
 def test_automation_run_persistence_and_logs(tmp_path: Path) -> None:

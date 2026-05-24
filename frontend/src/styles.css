@@ -125,7 +125,7 @@ a {
 }
 
 .page-split {
-  grid-template-columns: minmax(0, 0.95fr) minmax(380px, 1.05fr);
+  grid-template-columns: minmax(440px, 0.88fr) minmax(460px, 1.12fr);
   align-items: start;
   max-width: none;
   width: 100%;
@@ -248,6 +248,11 @@ a {
 .detail-pane,
 .list-pane {
   overflow: hidden;
+}
+
+.run-panel-wide {
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .detail-pane--plain {
@@ -426,7 +431,9 @@ tr:focus-visible {
 
 .filter-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(132px, 150px) minmax(120px, 150px) minmax(104px, 116px);
+  grid-template-columns:
+    minmax(180px, 1fr) minmax(132px, 150px) minmax(120px, 150px)
+    minmax(104px, 116px) minmax(140px, 170px);
   gap: 10px;
   min-width: 0;
 }
@@ -499,11 +506,15 @@ table {
 }
 
 .jobs-col-title {
-  width: 34%;
+  width: 44%;
 }
 
 .jobs-col-fit {
   width: 104px;
+}
+
+.jobs-col-eligibility {
+  width: 154px;
 }
 
 .jobs-col-status {
@@ -561,14 +572,16 @@ tbody tr:hover,
 .job-title-cell span,
 .applied-cell span,
 .resume-cell span,
-.fit-cell span {
+.fit-cell span,
+.eligibility-cell span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .job-title-cell strong,
 .applied-cell span,
-.resume-cell span {
+.resume-cell span,
+.eligibility-cell strong {
   white-space: nowrap;
 }
 
@@ -579,6 +592,17 @@ tbody tr:hover,
 
 .fit-cell {
   color: #11130f;
+}
+
+.eligibility-cell strong {
+  color: #202124;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.eligibility-cell .eligibility-badge {
+  width: fit-content;
+  max-width: 100%;
 }
 
 .fit-cell strong {
@@ -634,6 +658,237 @@ tbody tr:hover,
   padding: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.section-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.section-subtitle {
+  color: #74776f;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.eligibility-box {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid #ecece4;
+  padding-top: 14px;
+}
+
+.eligibility-box p {
+  margin: 0;
+}
+
+.eligibility-summary {
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fafaf5;
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+
+.eligibility-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.eligibility-badge--eligible {
+  background: #daf0df;
+  color: #1f6b38;
+}
+
+.eligibility-badge--needs_review {
+  background: #fff1c7;
+  color: #805700;
+}
+
+.eligibility-badge--ineligible {
+  background: #fde2df;
+  color: #982c25;
+}
+
+.eligibility-badge--none {
+  background: #eceee7;
+  color: #4d5048;
+}
+
+.eligibility-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.compact-list {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.compact-list--bad {
+  border-color: #f1beb9;
+  background: #fff7f6;
+}
+
+.compact-list--warn {
+  border-color: #ead890;
+  background: #fffaf0;
+}
+
+.compact-list h4,
+.requirements-panel h3,
+.requirement-group summary {
+  margin: 0;
+  color: #4d5048;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.compact-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.requirements-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.requirements-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.requirement-group {
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.requirement-group--missing {
+  border-color: #f1beb9;
+}
+
+.requirement-group--unknown {
+  border-color: #ead890;
+}
+
+.requirement-group--met {
+  border-color: #b9ddc1;
+}
+
+.requirement-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 12px;
+  cursor: pointer;
+  text-transform: capitalize;
+}
+
+.requirement-group--missing summary {
+  background: #fff7f6;
+  color: #8e3029;
+}
+
+.requirement-group--unknown summary {
+  background: #fffaf0;
+  color: #765100;
+}
+
+.requirement-group--met summary {
+  background: #f0faf2;
+  color: #1f6b38;
+}
+
+.requirement-group--not_applicable summary {
+  background: #f7f8f2;
+  color: #555952;
+}
+
+.requirement-group summary strong {
+  display: inline-grid;
+  min-width: 24px;
+  min-height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: inherit;
+}
+
+.requirement-card-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.requirement-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #ecece4;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.requirement-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.requirement-card-header span {
+  width: fit-content;
+  border-radius: 999px;
+  background: #eef1ea;
+  color: #4d5048;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.requirement-card p {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.requirement-card blockquote {
+  margin: 0;
+  border-left: 3px solid #cfd2c7;
+  color: #5f635b;
+  padding-left: 9px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.requirement-card small {
+  color: #6a6e66;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .empty-state-panel {
@@ -734,6 +989,7 @@ tbody tr:hover,
   .metrics-band,
   .form-grid,
   .run-grid,
+  .eligibility-review-grid,
   .filter-row,
   .date-filter-row {
     grid-template-columns: 1fr;

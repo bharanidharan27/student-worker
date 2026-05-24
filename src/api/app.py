@@ -21,6 +21,7 @@ from src.api.schemas import (
     AutomationRunLogResponse,
     AutomationRunResponse,
     ContinueRunResponse,
+    EligibilityReviewRequest,
     HealthResponse,
     JobListResponse,
     JobResponse,
@@ -28,6 +29,7 @@ from src.api.schemas import (
     SessionCheckResponse,
     SessionStatusResponse,
     StartLoginCaptureRequest,
+    UpdateEligibilityOverrideRequest,
     UpdateJobStatusRequest,
 )
 from src.api.services import AutomationService, RunContext
@@ -39,6 +41,7 @@ from src.apply_automation import (
 )
 from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL, capture_login_state
 from src.auth.session_check import auth_state_exists, check_session
+from src.eligibility.assessor import review_db_eligibility, review_stored_job_eligibility
 from src.scraping.workday_scraper import scrape_workday_jobs
 from src.storage.db import (
     APPLY_QUEUE_EXCLUDED_STATUSES,
@@ -51,6 +54,7 @@ from src.storage.db import (
     init_db,
     list_automation_run_logs,
     list_automation_runs,
+    update_job_eligibility_override,
     update_job_status,
 )
 
@@ -205,6 +209,7 @@ def create_app(
         q: str | None = Query(default=None),
         status: str | None = Query(default=None),
         fit_label: str | None = Query(default=None),
+        eligibility_status: str | None = Query(default=None),
         min_score: int | None = Query(default=None, ge=0, le=100),
         posted_from: date | None = Query(default=None),
         posted_to: date | None = Query(default=None),
@@ -212,7 +217,19 @@ def create_app(
         queue: bool = Query(default=False),
         limit: int = Query(default=100, ge=1, le=1_000),
     ) -> JobListResponse:
-        rows = _query_jobs(db_path, q, status, fit_label, min_score, posted_from, posted_to, sort, queue, limit)
+        rows = _query_jobs(
+            db_path,
+            q,
+            status,
+            fit_label,
+            eligibility_status,
+            min_score,
+            posted_from,
+            posted_to,
+            sort,
+            queue,
+            limit,
+        )
         return JobListResponse(jobs=[_job_response_from_row(row, include_description=False) for row in rows])
 
     @app.get("/api/jobs/{job_id}", response_model=JobResponse)
@@ -234,6 +251,63 @@ def create_app(
         if row is None:
             raise HTTPException(status_code=404, detail=f"No job found with id {job_id}.")
         return _job_response_from_row(row, include_description=True)
+
+    @app.patch("/api/jobs/{job_id}/eligibility-override", response_model=JobResponse)
+    def patch_job_eligibility_override(job_id: int, body: UpdateEligibilityOverrideRequest) -> JobResponse:
+        updated = update_job_eligibility_override(
+            job_id,
+            body.eligibility_override,
+            note=body.note,
+            db_path=db_path,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"No job found with id {job_id}.")
+        row = get_job_by_id(job_id, db_path=db_path)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"No job found with id {job_id}.")
+        return _job_response_from_row(row, include_description=True)
+
+    @app.post("/api/jobs/{job_id}/eligibility/review", response_model=AutomationRunResponse)
+    def start_job_eligibility_review(job_id: int, body: EligibilityReviewRequest) -> AutomationRunResponse:
+        params = body.model_dump() | {"job_id": job_id}
+
+        def action(context: RunContext) -> dict[str, Any]:
+            context.set_step(f"Reviewing eligibility for job {job_id}.")
+            assessment = review_stored_job_eligibility(
+                job_id,
+                db_path=_path_or_default(body.db_path, db_path),
+            )
+            context.log(f"Eligibility for job {job_id}: {assessment.status}.")
+            return {
+                "job_id": job_id,
+                "eligibility_status": assessment.status,
+                "llm_used": assessment.llm_used,
+                "provider": assessment.provider,
+                "model": assessment.model,
+            }
+
+        run_id = service.submit("eligibility_review", params, action)
+        return _run_or_404(run_id, db_path)
+
+    @app.post("/api/eligibility/review", response_model=AutomationRunResponse)
+    def start_all_eligibility_review(body: EligibilityReviewRequest) -> AutomationRunResponse:
+        params = body.model_dump()
+
+        def action(context: RunContext) -> dict[str, Any]:
+            context.set_step("Reviewing eligibility for all saved jobs.")
+
+            def progress(index: int, total: int, job_id: int) -> None:
+                context.set_step(f"Reviewing eligibility {index}/{total} (job {job_id}).")
+
+            count = review_db_eligibility(
+                db_path=_path_or_default(body.db_path, db_path),
+                progress=progress,
+            )
+            context.log(f"Reviewed eligibility for {count} job(s).")
+            return {"jobs_reviewed": count}
+
+        run_id = service.submit("eligibility_review", params, action)
+        return _run_or_404(run_id, db_path)
 
     @app.post("/api/apply/job/{job_id}", response_model=AutomationRunResponse)
     def start_apply_job(job_id: int, body: ApplyJobRequest) -> AutomationRunResponse:
@@ -374,6 +448,7 @@ def _query_jobs(
     q: str | None,
     status: str | None,
     fit_label: str | None,
+    eligibility_status: str | None,
     min_score: int | None,
     posted_from: date | None,
     posted_to: date | None,
@@ -387,12 +462,23 @@ def _query_jobs(
     if queue:
         where.append("COALESCE(status, 'new') NOT IN (?, ?)")
         values.extend(APPLY_QUEUE_EXCLUDED_STATUSES)
+        where.append(
+            """
+            (
+              COALESCE(eligibility_status, '') != 'ineligible'
+              OR COALESCE(eligibility_override, 0) = 1
+            )
+            """
+        )
     if status:
         where.append("COALESCE(status, 'new') = ?")
         values.append(status)
     if fit_label:
         where.append("fit_label = ?")
         values.append(fit_label)
+    if eligibility_status:
+        where.append("eligibility_status = ?")
+        values.append(eligibility_status)
     if min_score is not None:
         where.append("COALESCE(fit_score, 0) >= ?")
         values.append(min_score)
@@ -414,7 +500,8 @@ def _query_jobs(
               COALESCE(workday_id, '') || ' ' ||
               COALESCE(location, '') || ' ' ||
               COALESCE(department, '') || ' ' ||
-              COALESCE(recommended_resume_name, '')
+              COALESCE(recommended_resume_name, '') || ' ' ||
+              COALESCE(eligibility_status, '')
             ) LIKE ?
             """
         )
@@ -448,6 +535,12 @@ def _job_order_sql(db_path: Path, sort: JobSort) -> str:
     if sort == "posted_asc":
         return f"{posted_date_presence} ASC, {posted_date_expression} ASC, id ASC"
     return f"""
+              CASE
+                WHEN COALESCE(eligibility_status, '') = 'ineligible'
+                     AND COALESCE(eligibility_override, 0) = 0
+                THEN 1
+                ELSE 0
+              END ASC,
               CASE fit_label
                 WHEN 'Strong Fit' THEN 0
                 WHEN 'Possible Fit' THEN 1
@@ -492,6 +585,7 @@ def _latest_scrape_job_order(db_path: Path) -> list[int]:
 
 def _job_response_from_row(row, include_description: bool) -> JobResponse:
     parsed = _json_loads(row["parsed_json"])
+    eligibility = _json_loads(row["eligibility_json"])
     return JobResponse(
         id=int(row["id"]),
         workday_id=row["workday_id"],
@@ -511,6 +605,9 @@ def _job_response_from_row(row, include_description: bool) -> JobResponse:
         recommended_resume_type=row["recommended_resume_type"],
         recommended_resume_name=row["recommended_resume_name"],
         recommended_resume_path=row["recommended_resume_path"],
+        eligibility_status=row["eligibility_status"],
+        eligibility=eligibility if isinstance(eligibility, dict) else None,
+        eligibility_override=bool(row["eligibility_override"]),
         status=row["status"],
         application_notes=row["application_notes"],
         applied_at=row["applied_at"],

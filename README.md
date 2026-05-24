@@ -55,6 +55,33 @@ python -m src.manual_job_report --input-file path\to\job.txt --output outputs\re
 
 The report includes parsed fields, fit score, fit label, reasons, gaps, job family, exact recommended resume, and extracted keywords.
 
+## Eligibility and Resume Gap Advisor
+
+The app now stores an eligibility review for each scraped or pasted job. It flags blockers such as undergraduate-only roles, required certifications, federal work-study constraints, unclear hours, missing required technologies, and experience requirements. It also lists truthful resume changes and non-resume actions to complete before applying.
+
+Create your private redacted profile from the tracked example:
+
+```bash
+copy data\applicant_profile.example.yaml data\applicant_profile.yaml
+```
+
+`data/applicant_profile.yaml` is ignored by git. Keep it limited to non-contact facts: degree level, program, hours, work-study status, technologies, domains of experience, certifications, portfolio links, and resume keywords.
+
+LLM use is optional. Without a key, local rules still run and nuanced cases are marked for review. To enable Gemini or an OpenAI-compatible provider, add values like these to `.env`:
+
+```bash
+copy .env.example .env
+
+LLM_PROVIDER=gemini
+LLM_API_KEY=your_api_key_here
+LLM_MODEL=gemini-2.5-flash
+LLM_TIMEOUT_SECONDS=60
+LLM_HTTP_RETRIES=2
+LLM_REVIEW_DELAY_SECONDS=1
+```
+
+For compatible providers, set `LLM_BASE_URL` and `LLM_MODEL` for that provider. `LLM_REVIEW_DELAY_SECONDS` spaces out bulk "Review all" calls so free-tier providers are less likely to return rate-limit errors. Ineligible jobs are hidden from the apply queue unless you enable the eligibility override after manual review.
+
 ## Bulk Workday Extraction
 
 The Workday jobs page requires ASU SSO. This app does not bypass login, ask for your password, or store credentials. You log in manually once, and Playwright saves local browser session state in `playwright/.auth/asu_workday.json`.

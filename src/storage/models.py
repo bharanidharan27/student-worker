@@ -12,6 +12,7 @@ ResumeType = Literal["technical", "product_ai", "admin_office", "customer_servic
 FitLabel = Literal["Strong Fit", "Possible Fit", "Skip"]
 DocumentType = Literal["resume", "cover_letter", "skills", "report"]
 ApplicationStatus = Literal["new", "reviewing", "applied", "skipped"]
+EligibilityStatus = Literal["eligible", "needs_review", "ineligible"]
 
 
 class ParsedJob(BaseModel):
@@ -69,6 +70,9 @@ class JobRecord(BaseModel):
     recommended_resume_type: ResumeType | None = None
     recommended_resume_name: str | None = None
     recommended_resume_path: str | None = None
+    eligibility_status: EligibilityStatus | None = None
+    eligibility_json: str | None = None
+    eligibility_override: bool = False
     status: ApplicationStatus = "new"
     application_notes: str | None = None
     applied_at: str | None = None

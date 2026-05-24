@@ -6,6 +6,7 @@ import argparse
 import re
 from pathlib import Path
 
+from src.eligibility.assessor import assess_job_eligibility
 from src.matching.keyword_extractor import count_term_hits
 from src.matching.resume_selector import ResumeRecommendation, recommend_resume_for_job
 from src.scraping.job_detail_parser import parse_job_description
@@ -451,6 +452,7 @@ def rescore_db(db_path: Path = DEFAULT_DB_PATH) -> int:
                 }
             )
             fit = score_fit(parsed, raw_description)
+            eligibility = assess_job_eligibility(parsed, raw_description)
             connection.execute(
                 """
                 UPDATE jobs
@@ -462,6 +464,8 @@ def rescore_db(db_path: Path = DEFAULT_DB_PATH) -> int:
                   recommended_resume_type = ?,
                   recommended_resume_name = ?,
                   recommended_resume_path = ?,
+                  eligibility_status = ?,
+                  eligibility_json = ?,
                   updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?;
                 """,
@@ -473,6 +477,8 @@ def rescore_db(db_path: Path = DEFAULT_DB_PATH) -> int:
                     fit.recommended_resume_type,
                     fit.recommended_resume_name,
                     fit.recommended_resume_path,
+                    eligibility.status,
+                    eligibility.model_dump_json(indent=2),
                     row["id"],
                 ),
             )
