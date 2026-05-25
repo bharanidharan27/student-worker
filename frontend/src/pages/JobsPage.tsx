@@ -120,8 +120,8 @@ export function JobsPage(): ReactElement {
   }
 
   return (
-    <div className={`page ${showDetails ? "page-split" : "page-full"}`}>
-      <section className="list-pane">
+    <div className={`page page-jobs ${showDetails ? "page-jobs--with-detail" : ""}`}>
+      <section className="list-pane jobs-list-pane">
         <header className="page-header">
           <div>
             <span className="eyebrow">Jobs</span>
@@ -254,8 +254,8 @@ export function JobsPage(): ReactElement {
               <col className="jobs-col-fit" />
               <col className="jobs-col-eligibility" />
               <col className="jobs-col-status" />
-              {!showDetails ? <col className="jobs-col-applied" /> : null}
-              {!showDetails ? <col className="jobs-col-resume" /> : null}
+              <col className="jobs-col-applied" />
+              <col className="jobs-col-resume" />
             </colgroup>
             <thead>
               <tr>
@@ -263,8 +263,8 @@ export function JobsPage(): ReactElement {
                 <th>Fit</th>
                 <th>Eligibility</th>
                 <th>Status</th>
-                {!showDetails ? <th>Applied</th> : null}
-                {!showDetails ? <th>Resume</th> : null}
+                <th>Applied</th>
+                <th>Resume</th>
               </tr>
             </thead>
             <tbody>
@@ -300,16 +300,12 @@ export function JobsPage(): ReactElement {
                   <td>
                     <StatusPill value={job.status} />
                   </td>
-                  {!showDetails ? (
-                    <td className="applied-cell">
-                      <span>{formatAppliedAt(job.applied_at)}</span>
-                    </td>
-                  ) : null}
-                  {!showDetails ? (
-                    <td className="resume-cell" title={job.recommended_resume_name || ""}>
-                      <span>{job.recommended_resume_name || "-"}</span>
-                    </td>
-                  ) : null}
+                  <td className="applied-cell">
+                    <span>{formatAppliedAt(job.applied_at)}</span>
+                  </td>
+                  <td className="resume-cell" title={job.recommended_resume_name || ""}>
+                    <span>{job.recommended_resume_name || "-"}</span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -319,7 +315,7 @@ export function JobsPage(): ReactElement {
       </section>
 
       {showDetails ? (
-        <section className="detail-pane">
+        <section className="detail-pane detail-pane--drawer" aria-label="Selected job preview">
         {selectedQuery.isFetching && !selected ? (
           <p className="empty-state empty-state-panel">Loading job detail.</p>
         ) : selected ? (
@@ -468,6 +464,15 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
     );
   }
 
+  const missingCount = countRequirementsByMatch(eligibility.requirements, "missing");
+  const unknownCount = countRequirementsByMatch(eligibility.requirements, "unknown");
+  const metCount = countRequirementsByMatch(eligibility.requirements, "met");
+  const hasReviewItems =
+    eligibility.blockers.length > 0 ||
+    eligibility.warnings.length > 0 ||
+    eligibility.resume_suggestions.length > 0 ||
+    eligibility.non_resume_actions.length > 0;
+
   return (
     <div className="eligibility-box">
       <header className="section-header">
@@ -487,21 +492,43 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
           Manual override is enabled for this job.
         </p>
       ) : null}
-      <p className="eligibility-summary">{eligibility.summary}</p>
-      <div className="eligibility-review-grid">
-        <CompactList title="Blockers" values={eligibility.blockers} tone="bad" />
-        <CompactList title="Warnings" values={eligibility.warnings} tone="warn" />
-        <CompactList
-          title="Resume Changes"
-          values={eligibility.resume_suggestions.map((item) => `${item.suggestion} Evidence: ${item.evidence}`)}
-          tone="neutral"
-        />
-        <CompactList
-          title="Non-Resume Actions"
-          values={eligibility.non_resume_actions.map((item) => item.description)}
-          tone="neutral"
-        />
+      <div className="eligibility-overview">
+        <p className="eligibility-summary">{eligibility.summary}</p>
+        <div className="eligibility-metrics" aria-label="Eligibility requirement counts">
+          <span className="eligibility-metric eligibility-metric--bad">
+            <strong>{missingCount}</strong>
+            Missing
+          </span>
+          <span className="eligibility-metric eligibility-metric--warn">
+            <strong>{unknownCount}</strong>
+            Unknown
+          </span>
+          <span className="eligibility-metric eligibility-metric--good">
+            <strong>{metCount}</strong>
+            Met
+          </span>
+          <span className="eligibility-metric">
+            <strong>{eligibility.requirements.length}</strong>
+            Total
+          </span>
+        </div>
       </div>
+      {hasReviewItems ? (
+        <div className="eligibility-review-grid">
+          <CompactList title="Blockers" values={eligibility.blockers} tone="bad" />
+          <CompactList title="Warnings" values={eligibility.warnings} tone="warn" />
+          <CompactList
+            title="Resume Changes"
+            values={eligibility.resume_suggestions.map((item) => `${item.suggestion} Evidence: ${item.evidence}`)}
+            tone="neutral"
+          />
+          <CompactList
+            title="Non-Resume Actions"
+            values={eligibility.non_resume_actions.map((item) => item.description)}
+            tone="neutral"
+          />
+        </div>
+      ) : null}
       <RequirementsByMatch requirements={eligibility.requirements} />
     </div>
   );
@@ -564,19 +591,23 @@ function RequirementsByMatch({ requirements }: RequirementsByMatchProps): ReactE
               </summary>
               <div className="requirement-card-list">
                 {items.map((requirement, index) => (
-                  <article className="requirement-card" key={`${requirement.match}-${requirement.text}-${index}`}>
-                    <div className="requirement-card-header">
-                      <span>{requirement.priority}</span>
-                      <span>{requirement.category}</span>
+                  <details className="requirement-card" key={`${requirement.match}-${requirement.text}-${index}`}>
+                    <summary>
+                      <span className="requirement-title">{requirement.text}</span>
+                      <span className="requirement-card-header">
+                        <span>{requirement.priority}</span>
+                        <span>{requirement.category}</span>
+                      </span>
+                    </summary>
+                    <div className="requirement-card-body">
+                      {requirement.source_quote ? <blockquote>{requirement.source_quote}</blockquote> : null}
+                      {requirement.evidence.length ? (
+                        <small>{requirement.evidence.join(" ")}</small>
+                      ) : requirement.notes ? (
+                        <small>{requirement.notes}</small>
+                      ) : null}
                     </div>
-                    <p>{requirement.text}</p>
-                    {requirement.source_quote ? <blockquote>{requirement.source_quote}</blockquote> : null}
-                    {requirement.evidence.length ? (
-                      <small>{requirement.evidence.join(" ")}</small>
-                    ) : requirement.notes ? (
-                      <small>{requirement.notes}</small>
-                    ) : null}
-                  </article>
+                  </details>
                 ))}
               </div>
             </details>
@@ -594,6 +625,10 @@ function groupRequirements(requirements: JobRequirement[]): Record<string, JobRe
     grouped[key].push(requirement);
     return grouped;
   }, {});
+}
+
+function countRequirementsByMatch(requirements: JobRequirement[], match: string): number {
+  return requirements.filter((requirement) => requirement.match === match).length;
 }
 
 function eligibilitySnapshot(eligibility: EligibilityAssessment | null, override: boolean): string {

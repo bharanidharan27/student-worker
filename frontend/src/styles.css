@@ -49,6 +49,10 @@ a {
   min-height: 100vh;
 }
 
+.shell--sidebar-collapsed {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -58,11 +62,25 @@ a {
   padding: 20px 14px;
 }
 
+.shell--sidebar-collapsed .sidebar {
+  align-items: center;
+  padding-inline: 10px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   min-height: 44px;
+  min-width: 0;
 }
 
 .brand-mark {
@@ -76,10 +94,32 @@ a {
   font-weight: 800;
 }
 
-.brand div {
+.brand-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+}
+
+.shell--sidebar-collapsed .brand-row {
+  flex-direction: column;
+}
+
+.shell--sidebar-collapsed .brand-copy,
+.shell--sidebar-collapsed .nav-item span {
+  display: none;
+}
+
+.shell--sidebar-collapsed .nav-list {
+  width: 100%;
+}
+
+.shell--sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding: 0;
 }
 
 .brand strong {
@@ -122,6 +162,12 @@ a {
   display: grid;
   gap: 18px;
   max-width: 1280px;
+}
+
+.page-jobs {
+  position: relative;
+  max-width: none;
+  width: 100%;
 }
 
 .page-split {
@@ -248,6 +294,23 @@ a {
 .detail-pane,
 .list-pane {
   overflow: hidden;
+}
+
+.jobs-list-pane {
+  min-height: calc(100vh - 48px);
+}
+
+.detail-pane--drawer {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  bottom: 24px;
+  z-index: 5;
+  align-content: start;
+  width: min(820px, calc(100vw - 360px));
+  max-width: calc(100vw - 48px);
+  overflow: auto;
+  box-shadow: 0 24px 60px rgba(32, 33, 36, 0.18);
 }
 
 .run-panel-wide {
@@ -506,7 +569,7 @@ table {
 }
 
 .jobs-col-title {
-  width: 44%;
+  width: 42%;
 }
 
 .jobs-col-fit {
@@ -730,7 +793,7 @@ tbody tr:hover,
 
 .eligibility-review-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 10px;
 }
 
@@ -765,9 +828,66 @@ tbody tr:hover,
 
 .compact-list ul {
   display: grid;
-  gap: 6px;
+  gap: 0;
   margin: 0;
-  padding-left: 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.compact-list li {
+  border-top: 1px solid rgba(207, 210, 199, 0.7);
+  padding: 8px 0 0;
+  line-height: 1.35;
+}
+
+.compact-list li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.eligibility-overview {
+  display: grid;
+  gap: 10px;
+}
+
+.eligibility-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eligibility-metric {
+  display: grid;
+  gap: 2px;
+  min-height: 54px;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  color: #666a62;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.eligibility-metric strong {
+  color: #202124;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.eligibility-metric--bad {
+  border-color: #f1beb9;
+  background: #fff7f6;
+}
+
+.eligibility-metric--warn {
+  border-color: #ead890;
+  background: #fffaf0;
+}
+
+.eligibility-metric--good {
+  border-color: #b9ddc1;
+  background: #f0faf2;
 }
 
 .requirements-panel {
@@ -846,18 +966,40 @@ tbody tr:hover,
 }
 
 .requirement-card {
-  display: grid;
-  gap: 7px;
   border: 1px solid #ecece4;
   border-radius: 8px;
   background: #fff;
-  padding: 10px;
+  overflow: hidden;
+}
+
+.requirement-card summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.requirement-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.requirement-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #202124;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .requirement-card-header {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-end;
 }
 
 .requirement-card-header span {
@@ -871,9 +1013,11 @@ tbody tr:hover,
   text-transform: capitalize;
 }
 
-.requirement-card p {
-  margin: 0;
-  line-height: 1.35;
+.requirement-card-body {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #ecece4;
+  padding: 10px 12px;
 }
 
 .requirement-card blockquote {
@@ -966,12 +1110,28 @@ tbody tr:hover,
     grid-template-columns: 1fr;
   }
 
+  .shell--sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     position: sticky;
     top: 0;
     z-index: 2;
     border-right: 0;
     border-bottom: 1px solid #deded6;
+  }
+
+  .shell--sidebar-collapsed .sidebar {
+    align-items: stretch;
+  }
+
+  .shell--sidebar-collapsed .brand-row {
+    flex-direction: row;
+  }
+
+  .shell--sidebar-collapsed .brand-copy {
+    display: grid;
   }
 
   .nav-list {
@@ -986,10 +1146,18 @@ tbody tr:hover,
     display: none;
   }
 
+  .detail-pane--drawer {
+    position: static;
+    width: auto;
+    max-width: none;
+    box-shadow: none;
+  }
+
   .metrics-band,
   .form-grid,
   .run-grid,
   .eligibility-review-grid,
+  .eligibility-metrics,
   .filter-row,
   .date-filter-row {
     grid-template-columns: 1fr;
