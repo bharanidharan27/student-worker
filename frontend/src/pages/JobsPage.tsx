@@ -467,9 +467,10 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
   const missingCount = countRequirementsByMatch(eligibility.requirements, "missing");
   const unknownCount = countRequirementsByMatch(eligibility.requirements, "unknown");
   const metCount = countRequirementsByMatch(eligibility.requirements, "met");
+  const visibleWarnings = filterVisibleWarnings(eligibility);
   const hasReviewItems =
     eligibility.blockers.length > 0 ||
-    eligibility.warnings.length > 0 ||
+    visibleWarnings.length > 0 ||
     eligibility.resume_suggestions.length > 0 ||
     eligibility.non_resume_actions.length > 0;
 
@@ -516,7 +517,7 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
       {hasReviewItems ? (
         <div className="eligibility-review-grid">
           <CompactList title="Blockers" values={eligibility.blockers} tone="bad" />
-          <CompactList title="Warnings" values={eligibility.warnings} tone="warn" />
+          <CompactList title="Warnings" values={visibleWarnings} tone="warn" />
           <CompactList
             title="Resume Changes"
             values={eligibility.resume_suggestions.map((item) => `${item.suggestion} Evidence: ${item.evidence}`)}
@@ -629,6 +630,30 @@ function groupRequirements(requirements: JobRequirement[]): Record<string, JobRe
 
 function countRequirementsByMatch(requirements: JobRequirement[], match: string): number {
   return requirements.filter((requirement) => requirement.match === match).length;
+}
+
+function filterVisibleWarnings(eligibility: EligibilityAssessment): string[] {
+  const duplicateRequirementTexts = eligibility.requirements
+    .filter((requirement) => requirement.match === "missing" || requirement.match === "unknown")
+    .map((requirement) => normalizeReviewText(requirement.text))
+    .filter((value) => value.length > 8);
+
+  return eligibility.warnings.filter((warning) => {
+    const normalized = normalizeReviewText(warning.replace(/^preferred:\s*/i, ""));
+    if (warning.trim().toLowerCase().startsWith("preferred:")) {
+      return false;
+    }
+    return !duplicateRequirementTexts.some(
+      (requirementText) => normalized.includes(requirementText) || requirementText.includes(normalized)
+    );
+  });
+}
+
+function normalizeReviewText(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function eligibilitySnapshot(eligibility: EligibilityAssessment | null, override: boolean): string {
