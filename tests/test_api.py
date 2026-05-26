@@ -93,6 +93,58 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     assert jobs.json()["jobs"][0]["eligibility"]["summary"] == "Looks good."
 
 
+def test_extracted_sort_appends_prior_scrape_order_after_partial_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job_ids = {}
+    for workday_id, title in [
+        ("JR-a", "Alpha"),
+        ("JR-b", "Bravo"),
+        ("JR-c", "Charlie"),
+        ("JR-d", "Delta"),
+    ]:
+        job_ids[workday_id] = upsert_job(
+            JobRecord(
+                workday_id=workday_id,
+                title=title,
+                raw_description=f"{title} role.",
+            ),
+            db_path=db_path,
+        )
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+    full_run_id = create_automation_run("scrape", {}, db_path=db_path, status="completed")
+    update_automation_run(
+        full_run_id,
+        db_path,
+        result={
+            "job_ids": [
+                job_ids["JR-c"],
+                job_ids["JR-a"],
+                job_ids["JR-d"],
+                job_ids["JR-b"],
+            ]
+        },
+        mark_finished=True,
+    )
+    partial_run_id = create_automation_run("scrape", {}, db_path=db_path, status="completed")
+    update_automation_run(
+        partial_run_id,
+        db_path,
+        result={"job_ids": [job_ids["JR-c"], job_ids["JR-a"]]},
+        mark_finished=True,
+    )
+
+    with TestClient(app) as client:
+        extracted_jobs = client.get("/api/jobs", params={"sort": "extracted"})
+
+    assert [job["workday_id"] for job in extracted_jobs.json()["jobs"][:4]] == [
+        "JR-c",
+        "JR-a",
+        "JR-d",
+        "JR-b",
+    ]
+
+
 def test_api_rejects_submit_without_confirmation(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.sqlite"
     service = AutomationService(db_path)

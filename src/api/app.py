@@ -554,7 +554,7 @@ def _job_order_sql(db_path: Path, sort: JobSort) -> str:
 
 def _latest_scrape_job_order(db_path: Path) -> list[int]:
     with get_connection(db_path) as connection:
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT result_json
             FROM automation_runs
@@ -562,24 +562,23 @@ def _latest_scrape_job_order(db_path: Path) -> list[int]:
               AND status = 'completed'
               AND result_json IS NOT NULL
             ORDER BY finished_at DESC, id DESC
-            LIMIT 1;
+            LIMIT 20;
             """
-        ).fetchone()
-    if row is None:
-        return []
-    result = _json_loads(row["result_json"])
-    if not isinstance(result, dict):
-        return []
+        ).fetchall()
     ordered_ids: list[int] = []
     seen_ids: set[int] = set()
-    for value in result.get("job_ids", []):
-        try:
-            job_id = int(value)
-        except (TypeError, ValueError):
+    for row in rows:
+        result = _json_loads(row["result_json"])
+        if not isinstance(result, dict):
             continue
-        if job_id not in seen_ids:
-            ordered_ids.append(job_id)
-            seen_ids.add(job_id)
+        for value in result.get("job_ids", []):
+            try:
+                job_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if job_id not in seen_ids:
+                ordered_ids.append(job_id)
+                seen_ids.add(job_id)
     return ordered_ids
 
 

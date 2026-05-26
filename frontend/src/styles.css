@@ -712,6 +712,7 @@ tbody tr:hover,
 }
 
 .description-box {
+  min-height: 320px;
   max-height: 360px;
   overflow: auto;
   margin: 0;
