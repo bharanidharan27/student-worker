@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.services import AutomationService
+from src.resume_tailoring import TailoredResumeResult
 from src.storage.db import (
     create_automation_run,
     get_automation_run,
@@ -280,6 +281,45 @@ def test_api_starts_all_jobs_eligibility_review(monkeypatch, tmp_path: Path) -> 
     assert completed is not None
     assert completed["status"] == "completed"
     assert '"jobs_reviewed":2' in completed["result_json"]
+
+
+def test_api_starts_tailor_resume_run(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job_id = upsert_job(
+        JobRecord(
+            workday_id="JR-tailor",
+            title="Technology Consultant",
+            raw_description="Support Zoom.",
+            recommended_resume_name="Base_Resume.pdf",
+        ),
+        db_path=db_path,
+    )
+
+    def fake_tailor(job_id: int, db_path: Path, extracted_dir=None, output_root=None):
+        return TailoredResumeResult(
+            job_id=job_id,
+            job_title="Technology Consultant",
+            source_resume_path="resumes/extracted/Base_Resume/main.tex",
+            output_resume_path="resumes/tailored/1-technology-consultant/main.tex",
+            output_dir="resumes/tailored/1-technology-consultant",
+            notes_path="resumes/tailored/1-technology-consultant/tailoring_notes.md",
+            generated_document_id=1,
+            additions=["Experience with Zoom. Evidence: Zoom_Resume.docx."],
+            skipped=[],
+        )
+
+    monkeypatch.setattr("src.api.app.tailor_resume_for_job", fake_tailor)
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/jobs/{job_id}/resume/tailor", json={})
+        completed = _wait_for_status(db_path, response.json()["id"], "completed")
+
+    assert response.status_code == 200
+    assert completed is not None
+    assert completed["status"] == "completed"
+    assert '"output_resume_path":"resumes/tailored/1-technology-consultant/main.tex"' in completed["result_json"]
 
 
 def test_api_continue_unblocks_waiting_run(tmp_path: Path) -> None:

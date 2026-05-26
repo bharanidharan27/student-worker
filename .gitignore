@@ -19,4 +19,6 @@ playwright/.auth/
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+resumes/extracted/
+resumes/tailored/
 

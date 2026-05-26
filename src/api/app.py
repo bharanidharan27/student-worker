@@ -29,6 +29,7 @@ from src.api.schemas import (
     SessionCheckResponse,
     SessionStatusResponse,
     StartLoginCaptureRequest,
+    TailorResumeRequest,
     UpdateEligibilityOverrideRequest,
     UpdateJobStatusRequest,
 )
@@ -42,6 +43,7 @@ from src.apply_automation import (
 from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL, capture_login_state
 from src.auth.session_check import auth_state_exists, check_session
 from src.eligibility.assessor import review_db_eligibility, review_stored_job_eligibility
+from src.resume_tailoring import DEFAULT_TAILORED_RESUME_DIR, tailor_resume_for_job
 from src.scraping.workday_scraper import scrape_workday_jobs
 from src.storage.db import (
     APPLY_QUEUE_EXCLUDED_STATUSES,
@@ -307,6 +309,26 @@ def create_app(
             return {"jobs_reviewed": count}
 
         run_id = service.submit("eligibility_review", params, action)
+        return _run_or_404(run_id, db_path)
+
+    @app.post("/api/jobs/{job_id}/resume/tailor", response_model=AutomationRunResponse)
+    def start_tailor_resume(job_id: int, body: TailorResumeRequest) -> AutomationRunResponse:
+        params = body.model_dump() | {"job_id": job_id}
+
+        def action(context: RunContext) -> dict[str, Any]:
+            context.set_step(f"Tailoring resume for job {job_id}.")
+            result = tailor_resume_for_job(
+                job_id,
+                db_path=_path_or_default(body.db_path, db_path),
+                extracted_dir=Path(body.extracted_dir) if body.extracted_dir else None,
+                output_root=Path(body.output_root) if body.output_root else DEFAULT_TAILORED_RESUME_DIR,
+            )
+            context.log(f"Tailored resume written to {result.output_resume_path}.")
+            context.log(f"Tailoring notes written to {result.notes_path}.")
+            context.log(f"Added {len(result.additions)} supported item(s); skipped {len(result.skipped)} unsupported item(s).")
+            return asdict(result)
+
+        run_id = service.submit("resume_tailor", params, action)
         return _run_or_404(run_id, db_path)
 
     @app.post("/api/apply/job/{job_id}", response_model=AutomationRunResponse)

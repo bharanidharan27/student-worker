@@ -115,6 +115,14 @@ export const consoleApi = createApi({
       query: () => ({ url: "/eligibility/review", method: "POST", body: {} }),
       invalidatesTags: ["Run", "Job"]
     }),
+    tailorResume: builder.mutation<AutomationRun, number>({
+      query: (jobId) => ({
+        url: `/jobs/${jobId}/resume/tailor`,
+        method: "POST",
+        body: {}
+      }),
+      invalidatesTags: ["Run", "Job"]
+    }),
     applyJob: builder.mutation<AutomationRun, { jobId: number; body: ApplyRequest }>({
       query: ({ jobId, body }) => ({
         url: `/apply/job/${jobId}`,
@@ -145,6 +153,7 @@ export const {
   useReviewJobEligibilityMutation,
   useStartLoginCaptureMutation,
   useStartScrapeMutation,
+  useTailorResumeMutation,
   useUpdateEligibilityOverrideMutation,
   useUpdateJobStatusMutation
 } = consoleApi;
