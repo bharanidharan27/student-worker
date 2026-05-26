@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from src.storage.models import ApplicationStatus
 
 
-RunKind = Literal["login_capture", "scrape", "apply_job", "apply_queue", "eligibility_review"]
+RunKind = Literal["login_capture", "scrape", "apply_job", "apply_queue", "eligibility_review", "resume_tailor"]
 RunStatus = Literal[
     "queued",
     "running",
@@ -59,6 +59,12 @@ class ScrapeRequest(BaseModel):
 
 class EligibilityReviewRequest(BaseModel):
     db_path: str | None = None
+
+
+class TailorResumeRequest(BaseModel):
+    db_path: str | None = None
+    extracted_dir: str | None = None
+    output_root: str | None = None
 
 
 class ApplyJobRequest(BaseModel):

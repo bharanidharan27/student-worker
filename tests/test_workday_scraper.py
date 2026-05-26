@@ -1,11 +1,14 @@
 from pathlib import Path
 
 from src.scraping.workday_scraper import (
+    _extract_detail_text,
     _is_probable_job_title,
     _looks_like_job_detail_page_text,
     _looks_like_results_page_text,
     _parse_job_cards_from_page_text,
     _parse_result_cards_from_page_text,
+    _return_to_results_page,
+    _wait_for_job_detail_page,
     build_workday_job,
     extract_workday_id,
     infer_location_from_text,
@@ -15,6 +18,81 @@ from src.scraping.workday_scraper import (
     store_workday_job,
 )
 from src.storage.db import count_rows
+
+
+class _FakeLocator:
+    def __init__(self, page: "_FakeDetailPage", selector: str, index: int = 0):
+        self.page = page
+        self.selector = selector
+        self.index = index
+
+    def count(self) -> int:
+        return len(self.page.selector_texts.get(self.selector, []))
+
+    def nth(self, index: int) -> "_FakeLocator":
+        return _FakeLocator(self.page, self.selector, index)
+
+    def inner_text(self, timeout: int | None = None) -> str:
+        values = self.page.selector_texts.get(self.selector, [])
+        if self.index >= len(values):
+            return ""
+        return values[self.index]
+
+
+class _FakeDetailPage:
+    def __init__(self, states: list[dict[str, list[str]]]):
+        self.states = states
+        self.state_index = 0
+        self.waits = 0
+
+    @property
+    def selector_texts(self) -> dict[str, list[str]]:
+        return self.states[self.state_index]
+
+    def locator(self, selector: str) -> _FakeLocator:
+        return _FakeLocator(self, selector)
+
+    def wait_for_timeout(self, wait_ms: int) -> None:
+        self.waits += 1
+        if self.state_index < len(self.states) - 1:
+            self.state_index += 1
+
+
+class _SlowResultsPage:
+    def __init__(self, waits_after_goto: int):
+        self.waits_after_goto = waits_after_goto
+        self.goto_calls = 0
+        self.go_back_calls = 0
+        self.waits_since_goto = 0
+
+    @property
+    def selector_texts(self) -> dict[str, list[str]]:
+        if self.goto_calls and self.waits_since_goto >= self.waits_after_goto:
+            return {
+                "body": [
+                    """
+                    Find Student Jobs
+                    178 Results
+                    Program Aide
+                    JR119636 | Campus: Tempe | Posting Date: 05/18/2026
+                    """
+                ]
+            }
+        return {"body": ["Skip to main content\nAccessibility Overview"]}
+
+    def locator(self, selector: str) -> _FakeLocator:
+        return _FakeLocator(self, selector)
+
+    def wait_for_timeout(self, wait_ms: int) -> None:
+        if self.goto_calls:
+            self.waits_since_goto += 1
+
+    def go_back(self, wait_until: str, timeout: int) -> None:
+        self.go_back_calls += 1
+
+    def goto(self, url: str, wait_until: str, timeout: int) -> None:
+        self.goto_calls += 1
+        self.waits_since_goto = 0
 
 
 def test_extract_workday_id_from_text_and_url() -> None:
@@ -170,6 +248,82 @@ def test_build_workday_job_normalizes_detail_text() -> None:
     assert job.location == "Tempe campus"
     assert job.posting_date == "04/24/2026"
     assert "Python tools" in job.raw_description
+
+
+def test_extract_detail_text_rejects_loading_only_workday_shell() -> None:
+    page = _FakeDetailPage(
+        [
+            {
+                "body": [
+                    """
+                    Skip to main content
+                    Accessibility Overview
+                    18
+                    Home
+                    Personal Resources
+                    Saved
+                    View Job Posting Details
+                    Applicant Services Frontline Representative
+                    Loading
+                    View Job Posting Details - Workday page is loaded
+                    """
+                ]
+            }
+        ]
+    )
+
+    assert _extract_detail_text(page) == ""
+
+
+def test_wait_for_job_detail_page_waits_until_description_is_loaded() -> None:
+    loading_shell = {
+        "body": [
+            """
+            Skip to main content
+            Accessibility Overview
+            View Job Posting Details
+            Applicant Services Frontline Representative
+            Loading
+            View Job Posting Details - Workday page is loaded
+            """
+        ]
+    }
+    loaded_detail = {
+        "body": [
+            """
+            Skip to main content
+            Accessibility Overview
+            View Job Posting Details
+            Applicant Services Frontline Representative
+            Applicant Services Frontline Representative
+            Apply
+
+            Job Profile:
+            Student Worker III
+
+            Job Family:
+            Student Employee
+
+            Job Description:
+            Supports applicant services by answering questions, routing requests,
+            and maintaining accurate records.
+
+            Job Requisition ID:
+            JR121562
+            """
+        ]
+    }
+    page = _FakeDetailPage([loading_shell, loaded_detail])
+
+    assert _wait_for_job_detail_page(page, wait_ms=1, attempts=3)
+    assert page.waits == 1
+
+
+def test_return_to_results_page_waits_through_slow_workday_blank_reload() -> None:
+    page = _SlowResultsPage(waits_after_goto=12)
+
+    assert _return_to_results_page(page, "https://www.myworkday.com/asu/jobs", wait_ms=1)
+    assert page.goto_calls == 1
 
 
 def test_store_workday_job_deduplicates_by_workday_id(tmp_path: Path) -> None:

@@ -481,7 +481,7 @@ def _return_to_results_page(page, workday_url: str, wait_ms: int) -> bool:
     except Exception:
         pass
 
-    if _wait_for_results_page(page, wait_ms, attempts=10):
+    if _wait_for_results_page(page, wait_ms, attempts=40):
         print("Reloaded results page.", flush=True)
         return True
 
@@ -550,13 +550,13 @@ def _wait_for_results_page(page, wait_ms: int, attempts: int) -> bool:
 
 def _wait_for_job_detail_page(page, wait_ms: int, attempts: int) -> bool:
     for _ in range(max(1, attempts)):
-        if _is_job_detail_page(page):
+        if _is_job_detail_page(page) and _extract_detail_text(page):
             return True
         try:
             page.wait_for_timeout(wait_ms)
         except Exception:
             pass
-    return _is_job_detail_page(page)
+    return _is_job_detail_page(page) and bool(_extract_detail_text(page))
 
 
 def _has_results_list_dom(page) -> bool:
@@ -905,9 +905,37 @@ def _extract_detail_text(page) -> str:
             text = _safe_locator_text(locator.nth(index))
             if text:
                 candidates.append(text)
-    if not candidates:
+    usable_candidates = [text for text in candidates if _is_usable_job_detail_text(text)]
+    if not usable_candidates:
         return ""
-    return normalize_whitespace(max(candidates, key=len))
+    return normalize_whitespace(max(usable_candidates, key=len))
+
+
+def _is_usable_job_detail_text(text: str) -> bool:
+    normalized = normalize_whitespace(text)
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    detail_signals = [
+        "job profile",
+        "job family",
+        "time type",
+        "scheduled weekly hours",
+        "job description",
+        "job requisition id",
+        "minimum qualifications",
+        "preferred qualifications",
+        "essential duties",
+        "responsibilities",
+    ]
+    if any(signal in lowered for signal in detail_signals):
+        return True
+
+    if "view job posting details" in lowered and re.search(r"(^|\n)\s*loading\s*($|\n)", normalized, re.I):
+        return False
+
+    return len(normalized) >= 300
 
 
 def _safe_body_text(page) -> str:

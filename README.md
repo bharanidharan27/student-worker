@@ -82,6 +82,8 @@ LLM_REVIEW_DELAY_SECONDS=1
 
 For compatible providers, set `LLM_BASE_URL` and `LLM_MODEL` for that provider. `LLM_REVIEW_DELAY_SECONDS` spaces out bulk "Review all" calls so free-tier providers are less likely to return rate-limit errors. Ineligible jobs are hidden from the apply queue unless you enable the eligibility override after manual review.
 
+The Jobs dashboard also has a `Tailor Resume` action. It copies the selected job's recommended extracted DOCX from `resumes/extracted/`, writes a tailored copy under `resumes/tailored/<job-id>-<job-title>/`, and adds only missing requirement items that are supported by the redacted profile or another extracted resume. Unsupported missing items are listed in `tailoring_notes.md` beside the generated resume instead of being fabricated.
+
 ## Bulk Workday Extraction
 
 The Workday jobs page requires ASU SSO. This app does not bypass login, ask for your password, or store credentials. You log in manually once, and Playwright saves local browser session state in `playwright/.auth/asu_workday.json`.

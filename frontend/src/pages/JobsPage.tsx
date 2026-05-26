@@ -1,5 +1,19 @@
 import { skipToken } from "@reduxjs/toolkit/query";
-import { AlertTriangle, Check, ExternalLink, Eye, EyeOff, Loader2, Lock, RotateCw, Search, Undo2, Unlock, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FilePenLine,
+  Loader2,
+  Lock,
+  RotateCw,
+  Search,
+  Undo2,
+  Unlock,
+  X
+} from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 
@@ -12,6 +26,7 @@ import {
   useReviewAllEligibilityMutation,
   useReviewJobEligibilityMutation,
   useUpdateEligibilityOverrideMutation,
+  useTailorResumeMutation,
   useUpdateJobStatusMutation
 } from "../services/api";
 import type { EligibilityAssessment, JobFilters, JobRequirement, JobSort } from "../types";
@@ -34,19 +49,25 @@ export function JobsPage(): ReactElement {
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [showDetails, setShowDetails] = useState<boolean>(() => loadDetailPreference());
   const [eligibilityRunId, setEligibilityRunId] = useState<number | null>(null);
+  const [resumeRunId, setResumeRunId] = useState<number | null>(null);
   const jobsQuery = useListJobsQuery(filters, { pollingInterval: 5_000 });
   const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null || !showDetails });
   const eligibilityRunQuery = useGetRunQuery(eligibilityRunId ?? skipToken, {
     pollingInterval: eligibilityRunId ? 2_000 : 0
   });
+  const resumeRunQuery = useGetRunQuery(resumeRunId ?? skipToken, {
+    pollingInterval: resumeRunId ? 2_000 : 0
+  });
   const [updateStatus, updateState] = useUpdateJobStatusMutation();
   const [updateEligibilityOverride, overrideState] = useUpdateEligibilityOverrideMutation();
   const [reviewJobEligibility, reviewJobState] = useReviewJobEligibilityMutation();
   const [reviewAllEligibility, reviewAllState] = useReviewAllEligibilityMutation();
+  const [tailorResume, tailorResumeState] = useTailorResumeMutation();
 
   const selected = showDetails ? selectedQuery.data : undefined;
   const jobs = jobsQuery.data?.jobs ?? [];
   const eligibilityRunActive = isActiveRunStatus(eligibilityRunQuery.data?.status);
+  const resumeRunActive = isActiveRunStatus(resumeRunQuery.data?.status);
 
   useEffect(() => {
     if (jobs.length === 0 && selectedJobId !== null) {
@@ -117,6 +138,14 @@ export function JobsPage(): ReactElement {
     }
     const run = await reviewJobEligibility(selected.id).unwrap();
     setEligibilityRunId(run.id);
+  }
+
+  async function startTailorResume(): Promise<void> {
+    if (!selected) {
+      return;
+    }
+    const run = await tailorResume(selected.id).unwrap();
+    setResumeRunId(run.id);
   }
 
   return (
@@ -364,6 +393,20 @@ export function JobsPage(): ReactElement {
               <button
                 type="button"
                 className="button"
+                onClick={() => void startTailorResume()}
+                disabled={tailorResumeState.isLoading || resumeRunActive || !selected.recommended_resume_name}
+                title="Create a tailored resume copy from the extracted source"
+              >
+                {tailorResumeState.isLoading || resumeRunActive ? (
+                  <Loader2 className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <FilePenLine size={16} aria-hidden="true" />
+                )}
+                Tailor Resume
+              </button>
+              <button
+                type="button"
+                className="button"
                 onClick={() => void startSelectedEligibilityReview()}
                 disabled={reviewJobState.isLoading || eligibilityRunActive}
                 title="Re-review eligibility for selected job"
@@ -432,6 +475,11 @@ export function JobsPage(): ReactElement {
           <RunPanel runId={eligibilityRunId} title="Eligibility run" />
         </div>
       ) : null}
+      {resumeRunId ? (
+        <div className="run-panel-wide">
+          <RunPanel runId={resumeRunId} title="Resume run" />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -467,9 +515,10 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
   const missingCount = countRequirementsByMatch(eligibility.requirements, "missing");
   const unknownCount = countRequirementsByMatch(eligibility.requirements, "unknown");
   const metCount = countRequirementsByMatch(eligibility.requirements, "met");
+  const visibleWarnings = filterVisibleWarnings(eligibility);
   const hasReviewItems =
     eligibility.blockers.length > 0 ||
-    eligibility.warnings.length > 0 ||
+    visibleWarnings.length > 0 ||
     eligibility.resume_suggestions.length > 0 ||
     eligibility.non_resume_actions.length > 0;
 
@@ -516,7 +565,7 @@ function EligibilityPanel({ eligibility, override }: EligibilityPanelProps): Rea
       {hasReviewItems ? (
         <div className="eligibility-review-grid">
           <CompactList title="Blockers" values={eligibility.blockers} tone="bad" />
-          <CompactList title="Warnings" values={eligibility.warnings} tone="warn" />
+          <CompactList title="Warnings" values={visibleWarnings} tone="warn" />
           <CompactList
             title="Resume Changes"
             values={eligibility.resume_suggestions.map((item) => `${item.suggestion} Evidence: ${item.evidence}`)}
@@ -629,6 +678,30 @@ function groupRequirements(requirements: JobRequirement[]): Record<string, JobRe
 
 function countRequirementsByMatch(requirements: JobRequirement[], match: string): number {
   return requirements.filter((requirement) => requirement.match === match).length;
+}
+
+function filterVisibleWarnings(eligibility: EligibilityAssessment): string[] {
+  const duplicateRequirementTexts = eligibility.requirements
+    .filter((requirement) => requirement.match === "missing" || requirement.match === "unknown")
+    .map((requirement) => normalizeReviewText(requirement.text))
+    .filter((value) => value.length > 8);
+
+  return eligibility.warnings.filter((warning) => {
+    const normalized = normalizeReviewText(warning.replace(/^preferred:\s*/i, ""));
+    if (warning.trim().toLowerCase().startsWith("preferred:")) {
+      return false;
+    }
+    return !duplicateRequirementTexts.some(
+      (requirementText) => normalized.includes(requirementText) || requirementText.includes(normalized)
+    );
+  });
+}
+
+function normalizeReviewText(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function eligibilitySnapshot(eligibility: EligibilityAssessment | null, override: boolean): string {

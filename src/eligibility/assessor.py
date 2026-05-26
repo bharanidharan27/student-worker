@@ -184,7 +184,6 @@ def _local_assessment(
 
     for requirement in evaluated:
         if requirement.priority == "preferred" and requirement.match in {"missing", "unknown"}:
-            warnings.append(f"Preferred: {requirement.text}")
             continue
 
         if requirement.match == "missing":
@@ -199,11 +198,11 @@ def _local_assessment(
                     )
                 )
             elif requirement.category == "work_study":
-                warnings.append(f"Work-study requirement may not be met: {requirement.text}")
+                blockers.append(requirement.text)
                 actions.append(
                     NonResumeAction(
-                        action_type="confirm_answer",
-                        description="Confirm federal work-study eligibility before applying.",
+                        action_type="do_not_apply",
+                        description="Do not apply unless you are actually federal work-study eligible.",
                         priority="required",
                         source_quote=requirement.source_quote or None,
                     )
@@ -592,7 +591,7 @@ def _category_for_text(text: str) -> str:
         return "education"
     if "hour" in lowered or "schedule" in lowered or "availability" in lowered:
         return "availability"
-    if any(term.lower() in lowered for term in TECH_TERMS):
+    if any(_contains_term(lowered, term) for term in TECH_TERMS):
         return "technology"
     if any(term in lowered for term in CERTIFICATION_TERMS):
         return "certification"

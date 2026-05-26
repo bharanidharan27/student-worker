@@ -53,6 +53,20 @@ def test_required_hours_with_unknown_availability_needs_review() -> None:
     assert any(action.action_type == "confirm_availability" for action in assessment.non_resume_actions)
 
 
+def test_federal_work_study_role_is_ineligible_when_profile_says_no() -> None:
+    raw = """
+    Job Title: Office Aide
+    Minimum Qualifications: Federal Work-Study eligibility is required.
+    Responsibilities: Support office records and email.
+    """
+
+    assessment = _assess(raw, ApplicantProfile(federal_work_study=False))
+
+    assert assessment.status == "ineligible"
+    assert any("work-study" in blocker.lower() for blocker in assessment.blockers)
+    assert any(action.action_type == "do_not_apply" for action in assessment.non_resume_actions)
+
+
 def test_present_technology_missing_from_resume_gets_resume_suggestion() -> None:
     raw = """
     Job Title: Data Assistant
@@ -111,7 +125,7 @@ def test_llm_failure_uses_local_rules_without_user_warning() -> None:
     assert not any("llm" in warning.lower() for warning in assessment.warnings)
 
 
-def test_preferred_missing_skill_warns_without_blocking() -> None:
+def test_preferred_missing_skill_is_not_a_warning_or_blocker() -> None:
     raw = """
     Job Title: Office Aide
     Minimum Qualifications: Current ASU student.
@@ -124,7 +138,26 @@ def test_preferred_missing_skill_warns_without_blocking() -> None:
 
     assert assessment.status == "eligible"
     assert assessment.blockers == []
-    assert any("Preferred" in warning for warning in assessment.warnings)
+    assert assessment.warnings == []
+    assert any(
+        requirement.priority == "preferred" and requirement.match == "missing"
+        for requirement in assessment.requirements
+    )
+
+
+def test_detail_oriented_is_not_tagged_as_technology_from_ai_substring() -> None:
+    assessment = _assess(
+        """
+        Job Title: Office Aide
+        Minimum Qualifications: Current ASU student.
+        Preferred Qualifications: Detail-oriented.
+        """
+    )
+
+    detail_requirement = next(
+        requirement for requirement in assessment.requirements if "detail-oriented" in requirement.text.lower()
+    )
+    assert detail_requirement.category == "other"
 
 
 def test_no_api_key_still_returns_local_assessment() -> None:
