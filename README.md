@@ -249,7 +249,7 @@ That writes the current page text and screenshot to `outputs/debug/` so the sele
 
 The local dashboard wraps the same human-in-the-loop CLI modules with a FastAPI API and a React/Redux frontend.
 
-Start the API:
+Start the API locally:
 
 ```bash
 .venv\Scripts\python.exe -m uvicorn src.api.app:app --host 127.0.0.1 --port 8000
