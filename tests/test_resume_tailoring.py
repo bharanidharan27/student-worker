@@ -44,7 +44,30 @@ def test_tailor_resume_prefers_latex_source_and_adds_supported_missing_items(tmp
     extracted_dir = tmp_path / "resumes" / "extracted"
     output_root = tmp_path / "resumes" / "tailored"
     extracted_dir.mkdir(parents=True)
-    _write_tex(extracted_dir / "Base_Resume" / "main.tex", [r"Python support experience."])
+    _write_tex(
+        extracted_dir / "Base_Resume" / "main.tex",
+        [
+            r"\section{Summary}",
+            r"\begin{align}",
+            r"Python support experience.",
+            r"\end{align}",
+            r"\section{Technical Skills}",
+            r"\begin{itemize}[leftmargin=0.15in, label={}]",
+            r"\small{\item{",
+            r"\textbf{Tools}{: Git} \\",
+            r"\textbf{Platforms}{: Canvas LMS (basic support)}",
+            r"}}",
+            r"\end{itemize}",
+            r"\section{Additional Experience}",
+            r"\resumeSubHeadingListStart",
+            r"\resumeSubheading{Sales Associate}{2024}{Store}{Remote}",
+            r"\resumeItemListStart",
+            r"\resumeItem{Helped customers.}",
+            r"\resumeItemListEnd",
+            r"\section{Availability}",
+            r"\resumeItem{-- Available Monâ€“Fri evenings.}",
+        ],
+    )
     _write_tex(extracted_dir / "Zoom_Resume" / "main.tex", [r"Zoom support and Canvas course shell experience."])
     assessment = EligibilityAssessment(
         status="needs_review",
@@ -92,11 +115,19 @@ def test_tailor_resume_prefers_latex_source_and_adds_supported_missing_items(tmp
     assert output_path.exists()
     output_text = output_path.read_text(encoding="utf-8")
     assert output_path.name == "main.tex"
-    assert "Targeted Skills" in output_text
-    assert "Experience with Zoom" in output_text
+    assert "Targeted Skills" not in output_text
+    assert "Experience with Zoom" not in output_text
+    assert r"\textbf{Platforms}{: Canvas LMS (basic support)" in output_text
+    assert "Zoom" in output_text
     assert "Evidence:" not in output_text
     assert "UnsupportedTool" not in output_text
-    assert "UnsupportedTool" in Path(result.notes_path).read_text(encoding="utf-8")
+    assert r"\begin{align}" not in output_text
+    assert r"\resumeSubHeadingListEnd" in output_text
+    assert r"\resumeItem{-- Available" in output_text
+    assert "\\section{Availability}\n  \\resumeItemListStart" in output_text
+    notes_text = Path(result.notes_path).read_text(encoding="utf-8")
+    assert "Experience with Zoom" in notes_text
+    assert "UnsupportedTool" in notes_text
 
 
 def test_tailor_resume_requires_eligibility_review(tmp_path: Path) -> None:

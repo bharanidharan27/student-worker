@@ -32,6 +32,47 @@ EXTRA_RESUME_TERMS = [
     "Outlook",
 ]
 
+LATEX_SKILL_BUCKETS = {
+    "Platforms": {"Blackboard", "Canvas", "LearningStudio", "Moodle", "Open edX", "WordPress", "Zoom"},
+    "Tools": {
+        "AWS",
+        "Docker",
+        "Excel",
+        "Git",
+        "Google Workspace",
+        "Jenkins",
+        "Jira",
+        "Microsoft Excel",
+        "Microsoft Office",
+        "Outlook",
+        "Postman",
+        "PowerPoint",
+    },
+    "Web & Systems": {"API", "APIs", "CSS", "HTML", "JavaScript", "React", "REST APIs", "TypeScript"},
+    "Databases": {"MongoDB", "MySQL", "PostgreSQL", "Redis", "SQL"},
+    "Support/Reporting": {"Power BI", "Tableau"},
+}
+
+MOJIBAKE_REPLACEMENTS = {
+    "–": "--",
+    "—": "---",
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+    "\u00e2\u20ac\u201c": "--",
+    "\u00e2\u20ac\u201d": "---",
+    "\u00e2\u20ac\u02dc": "'",
+    "\u00e2\u20ac\u2122": "'",
+    "â€“": "--",
+    "â€”": "---",
+    "â€˜": "'",
+    "â€™": "'",
+    "â€œ": '"',
+    "â€": '"',
+    "Â": "",
+}
+
 GENERIC_TERM_WORDS = {
     "ability",
     "activities",
@@ -106,9 +147,17 @@ def tailor_resume_for_job(
     output_dir.mkdir(parents=True, exist_ok=True)
     notes_path = output_dir / "tailoring_notes.md"
     output_resume = _copy_resume_source(source_resume, output_dir, job_id)
+    if source_resume.kind == "latex":
+        _sanitize_tex_source(output_resume)
     if additions:
         if source_resume.kind == "latex":
-            _append_tailored_tex_section(output_resume, additions)
+            additions, overflow = _apply_tailored_tex_additions(output_resume, additions)
+            skipped.extend(
+                [
+                    f"{item} - not added to the LaTeX resume because it could not fit into the existing one-page skills layout."
+                    for item in overflow
+                ]
+            )
         else:
             document = Document(str(output_resume))
             _append_tailored_docx_section(document, additions)
@@ -356,25 +405,122 @@ def _append_tailored_docx_section(document, additions: list[str]) -> None:
         paragraph.add_run(_resume_addition_text(addition))
 
 
-def _append_tailored_tex_section(path: Path, additions: list[str]) -> None:
+def _apply_tailored_tex_additions(path: Path, additions: list[str]) -> tuple[list[str], list[str]]:
     content = path.read_text(encoding="utf-8")
-    insertion = _latex_targeted_section(additions)
-    marker = r"\end{document}"
-    if marker not in content:
-        raise ValueError(f"Could not find \\end{{document}} in {path}.")
-    updated = content.replace(marker, f"{insertion}\n\n{marker}", 1)
-    path.write_text(updated, encoding="utf-8")
-
-
-def _latex_targeted_section(additions: list[str]) -> str:
-    lines = [
-        r"\section{Targeted Skills}",
-        r"  \resumeItemListStart",
-    ]
+    applied: list[str] = []
+    overflow: list[str] = []
+    updated = content
     for addition in additions:
-        lines.append(f"    \\resumeItem{{{_latex_escape(_resume_addition_text(addition))}}}")
-    lines.append(r"  \resumeItemListEnd")
-    return "\n".join(lines)
+        next_content, changed = _inline_tex_addition(updated, addition)
+        if changed:
+            updated = next_content
+            applied.append(addition)
+        else:
+            overflow.append(addition)
+    if updated != content:
+        path.write_text(updated, encoding="utf-8")
+    return applied, overflow
+
+
+def _sanitize_tex_source(path: Path) -> None:
+    content = path.read_text(encoding="utf-8")
+    updated = content
+    for source, replacement in MOJIBAKE_REPLACEMENTS.items():
+        updated = updated.replace(source, replacement)
+    updated = _replace_align_blocks(updated)
+    updated = _wrap_availability_items(updated)
+    updated = _close_open_resume_lists(updated)
+    if updated != content:
+        path.write_text(updated, encoding="utf-8")
+
+
+def _replace_align_blocks(content: str) -> str:
+    pattern = re.compile(r"\\begin\{align\}(.*?)\\end\{align\}", flags=re.DOTALL)
+
+    def repl(match: re.Match[str]) -> str:
+        body = re.sub(r"\s+", " ", match.group(1)).strip()
+        return f"\\noindent\\small{{{body}}}\n"
+
+    return pattern.sub(repl, content)
+
+
+def _wrap_availability_items(content: str) -> str:
+    pattern = re.compile(r"(\\section\{Availability\}\s*)(\\resumeItem\{.*?\})", flags=re.DOTALL)
+
+    def repl(match: re.Match[str]) -> str:
+        section_header = match.group(1).rstrip()
+        item = match.group(2).strip()
+        return f"{section_header}\n  \\resumeItemListStart\n    {item}\n  \\resumeItemListEnd\n"
+
+    return pattern.sub(repl, content, count=1)
+
+
+def _close_open_resume_lists(content: str) -> str:
+    lines = content.splitlines()
+    result: list[str] = []
+    open_subheading_lists = 0
+
+    for line in lines:
+        stripped = line.strip()
+        active = bool(stripped) and not stripped.startswith("%")
+        should_close = active and (stripped.startswith(r"\section{") or stripped == r"\end{document}")
+        if should_close and open_subheading_lists > 0:
+            while open_subheading_lists > 0:
+                result.append(r"\resumeSubHeadingListEnd")
+                open_subheading_lists -= 1
+
+        result.append(line)
+
+        if not active:
+            continue
+        open_subheading_lists += stripped.count(r"\resumeSubHeadingListStart")
+        open_subheading_lists -= stripped.count(r"\resumeSubHeadingListEnd")
+        open_subheading_lists = max(0, open_subheading_lists)
+
+    return "\n".join(result) + ("\n" if content.endswith("\n") else "")
+
+
+def _inline_tex_addition(content: str, addition: str) -> tuple[str, bool]:
+    addition_text = _resume_addition_text(addition)
+    if not addition_text.startswith("Experience with "):
+        return content, False
+
+    terms = [term.strip() for term in addition_text.removeprefix("Experience with ").split(",") if term.strip()]
+    if not terms:
+        return content, False
+
+    updated = content
+    for term in terms:
+        bucket = _latex_skill_bucket(term)
+        if bucket is None:
+            return content, False
+        updated, inserted = _append_term_to_skill_bucket(updated, bucket, term)
+        if not inserted:
+            return content, False
+    return updated, True
+
+
+def _latex_skill_bucket(term: str) -> str | None:
+    for bucket, terms in LATEX_SKILL_BUCKETS.items():
+        if term in terms:
+            return bucket
+    return None
+
+
+def _append_term_to_skill_bucket(content: str, bucket: str, term: str) -> tuple[str, bool]:
+    pattern = re.compile(rf"(?P<prefix>\\textbf\{{{re.escape(bucket)}\}}\{{:\s*)(?P<body>.*?)(?P<suffix>\}}\s*(?:\\\\)?)")
+    match = pattern.search(content)
+    if match is None:
+        return content, False
+
+    body = match.group("body")
+    if _contains_term(body, term):
+        return content, True
+
+    delimiter = " $|$ " if "$|$" in body else ", "
+    updated_body = f"{body.rstrip()}{delimiter}{term}"
+    updated = f"{content[:match.start()]}{match.group('prefix')}{updated_body}{match.group('suffix')}{content[match.end():]}"
+    return updated, True
 
 
 def _write_notes(
