@@ -3,6 +3,7 @@ from pathlib import Path
 from docx import Document
 
 from src.eligibility.models import EligibilityAssessment, JobRequirement
+from src.eligibility.profile import ApplicantProfile
 from src.resume_tailoring import tailor_resume_for_job
 from src.storage.db import upsert_job
 from src.storage.models import JobRecord
@@ -201,3 +202,79 @@ def test_tailor_resume_falls_back_to_docx_when_latex_source_is_missing(tmp_path:
     assert "Targeted Skills" in output_text
     assert "Experience with Zoom" in output_text
     assert "Evidence:" not in output_text
+
+
+def test_tailor_resume_merges_availability_and_portfolio_without_new_latex_section(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    extracted_dir = tmp_path / "resumes" / "extracted"
+    output_root = tmp_path / "resumes" / "tailored"
+    extracted_dir.mkdir(parents=True)
+    _write_tex(
+        extracted_dir / "Base_Resume" / "main.tex",
+        [
+            r"\section{Summary}",
+            r"\noindent\small{Technology-focused graduate student.}",
+            r"\section{Technical Skills}",
+            r"\begin{itemize}[leftmargin=0.15in, label={}]",
+            r"\small{\item{",
+            r"\textbf{Tools}{: Git}",
+            r"}}",
+            r"\end{itemize}",
+            r"\section{Availability}",
+            r"\resumeItem{-- Available evenings.}",
+        ],
+    )
+    assessment = EligibilityAssessment(
+        status="needs_review",
+        summary="Review gaps.",
+        requirements=[
+            JobRequirement(
+                text="Must be available for 20 hours per week.",
+                priority="must",
+                category="availability",
+                source_quote="Must be available for 20 hours per week.",
+                confidence=0.9,
+                match="missing",
+            ),
+            JobRequirement(
+                text="Portfolio may be required.",
+                priority="preferred",
+                category="portfolio",
+                source_quote="Strong portfolio demonstrating work preferred.",
+                confidence=0.8,
+                match="missing",
+            ),
+        ],
+    )
+    job_id = upsert_job(
+        JobRecord(
+            workday_id="JR-tailor-categories",
+            title="Portfolio Support Aide",
+            raw_description="Portfolio and availability role.",
+            recommended_resume_name="Base_Resume.pdf",
+            recommended_resume_path="resumes/master/Base_Resume.pdf",
+            eligibility_status="needs_review",
+            eligibility_json=assessment.model_dump_json(),
+        ),
+        db_path=db_path,
+    )
+    profile = ApplicantProfile(
+        available_hours_per_week=20,
+        portfolio_links=["https://portfolio.example"],
+    )
+
+    result = tailor_resume_for_job(
+        job_id,
+        db_path=db_path,
+        extracted_dir=extracted_dir,
+        output_root=output_root,
+        profile=profile,
+    )
+
+    output_text = Path(result.output_resume_path).read_text(encoding="utf-8")
+    notes_text = Path(result.notes_path).read_text(encoding="utf-8")
+    assert "Targeted Skills" not in output_text
+    assert "Portfolio available upon request" in output_text
+    assert "Available up to 20 hours/week" in output_text
+    assert "Portfolio available upon request" in notes_text
+    assert "Available up to 20 hours/week" in notes_text

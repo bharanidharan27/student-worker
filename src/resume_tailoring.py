@@ -139,9 +139,10 @@ def tailor_resume_for_job(
     resolved_extracted_dir = _resolve_extracted_dir(extracted_dir)
     source_resume = _find_extracted_resume(row, resolved_extracted_dir)
     source_text = _read_resume_text(source_resume)
-    evidence_bank = _evidence_bank(resolved_extracted_dir, profile or load_applicant_profile())
+    applicant = profile or load_applicant_profile()
+    evidence_bank = _evidence_bank(resolved_extracted_dir, applicant)
     assessment = _eligibility_from_row(row)
-    additions, skipped = _supported_missing_additions(assessment, source_text, evidence_bank)
+    additions, skipped = _supported_missing_additions(assessment, source_text, evidence_bank, applicant)
 
     output_dir = output_root / f"{job_id}-{_slug(row['title'] or 'job')}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -298,6 +299,7 @@ def _supported_missing_additions(
     assessment: EligibilityAssessment,
     source_text: str,
     evidence_bank: list[ResumeEvidence],
+    profile: ApplicantProfile,
 ) -> tuple[list[str], list[str]]:
     additions: list[str] = []
     skipped: list[str] = []
@@ -305,7 +307,7 @@ def _supported_missing_additions(
     for requirement in assessment.requirements:
         if requirement.match != "missing":
             continue
-        candidate = _addition_for_requirement(requirement, source_text, evidence_bank)
+        candidate = _addition_for_requirement(requirement, source_text, evidence_bank, profile)
         if candidate is None:
             skipped.append(f"{requirement.text} - no supporting evidence found in profile or extracted resumes.")
             continue
@@ -322,15 +324,23 @@ def _addition_for_requirement(
     requirement: JobRequirement,
     source_text: str,
     evidence_bank: list[ResumeEvidence],
+    profile: ApplicantProfile,
 ) -> tuple[str, str] | None:
-    if requirement.category not in {"technology", "experience", "portfolio"}:
+    if requirement.category not in {"technology", "experience", "portfolio", "availability"}:
         return None
 
     terms = _candidate_terms(requirement)
+    if requirement.category == "availability":
+        if profile.available_hours_per_week is None:
+            return None
+        statement = f"Available up to {profile.available_hours_per_week} hours/week"
+        if _contains_term(source_text, statement) or f"{profile.available_hours_per_week} hours/week" in source_text:
+            return None
+        return statement, "applicant profile"
+
     if requirement.category == "portfolio":
-        portfolio_evidence = _first_evidence(["portfolio"], evidence_bank)
-        if portfolio_evidence and not _contains_term(source_text, "portfolio"):
-            return "Portfolio available upon request", portfolio_evidence
+        if profile.portfolio_links and not _contains_term(source_text, "portfolio"):
+            return "Portfolio available upon request", "applicant profile"
         return None
 
     supported_terms: list[str] = []
@@ -482,6 +492,12 @@ def _close_open_resume_lists(content: str) -> str:
 
 def _inline_tex_addition(content: str, addition: str) -> tuple[str, bool]:
     addition_text = _resume_addition_text(addition)
+    if addition_text.startswith("Available up to "):
+        return _inline_availability_addition(content, addition_text)
+
+    if addition_text == "Portfolio available upon request":
+        return _inline_summary_addition(content, addition_text)
+
     if not addition_text.startswith("Experience with "):
         return content, False
 
@@ -497,6 +513,37 @@ def _inline_tex_addition(content: str, addition: str) -> tuple[str, bool]:
         updated, inserted = _append_term_to_skill_bucket(updated, bucket, term)
         if not inserted:
             return content, False
+    return updated, True
+
+
+def _inline_availability_addition(content: str, addition_text: str) -> tuple[str, bool]:
+    pattern = re.compile(r"(?P<prefix>\\section\{Availability\}.*?\\resumeItem\{)(?P<body>.*?)(?P<suffix>\})", re.DOTALL)
+    match = pattern.search(content)
+    if match is None:
+        return content, False
+
+    body = match.group("body")
+    if addition_text in body:
+        return content, True
+
+    updated_body = f"{body.rstrip()} $|$ {addition_text}"
+    updated = f"{content[:match.start()]}{match.group('prefix')}{updated_body}{match.group('suffix')}{content[match.end():]}"
+    return updated, True
+
+
+def _inline_summary_addition(content: str, addition_text: str) -> tuple[str, bool]:
+    pattern = re.compile(r"(?P<prefix>\\section\{Summary\}.*?\\noindent\\small\{)(?P<body>.*?)(?P<suffix>\})", re.DOTALL)
+    match = pattern.search(content)
+    if match is None:
+        return content, False
+
+    body = match.group("body")
+    if addition_text in body:
+        return content, True
+
+    separator = " " if body.rstrip().endswith(".") else ". "
+    updated_body = f"{body.rstrip()}{separator}{addition_text}."
+    updated = f"{content[:match.start()]}{match.group('prefix')}{updated_body}{match.group('suffix')}{content[match.end():]}"
     return updated, True
 
 
