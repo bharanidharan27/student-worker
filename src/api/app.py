@@ -29,6 +29,7 @@ from src.api.schemas import (
     SessionCheckResponse,
     SessionStatusResponse,
     StartLoginCaptureRequest,
+    StopRunResponse,
     TailorResumeRequest,
     UpdateEligibilityOverrideRequest,
     UpdateJobStatusRequest,
@@ -162,6 +163,12 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"No run found with id {run_id}.")
         return ContinueRunResponse(accepted=True, run=_run_or_404(run_id, db_path))
 
+    @app.post("/api/runs/{run_id}/stop", response_model=StopRunResponse)
+    def stop_run(run_id: int) -> StopRunResponse:
+        if not service.stop_run(run_id):
+            raise HTTPException(status_code=404, detail=f"No run found with id {run_id}.")
+        return StopRunResponse(accepted=True, run=_run_or_404(run_id, db_path))
+
     @app.get("/api/runs", response_model=AutomationRunListResponse)
     def runs(limit: int = Query(default=50, ge=1, le=500)) -> AutomationRunListResponse:
         return AutomationRunListResponse(
@@ -200,6 +207,7 @@ def create_app(
                 idle_rounds=body.idle_rounds,
                 click_timeout_ms=body.click_timeout_ms,
                 debug_dump_dir=Path(body.debug_dump_dir) if body.debug_dump_dir else None,
+                stop_requested=context.raise_if_stopped,
             )
             return asdict(summary)
 

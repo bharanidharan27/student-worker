@@ -28,6 +28,11 @@ interface ContinueResponse {
   run: AutomationRun;
 }
 
+interface StopResponse {
+  accepted: boolean;
+  run: AutomationRun;
+}
+
 export const consoleApi = createApi({
   reducerPath: "consoleApi",
   baseQuery: fetchBaseQuery({ baseUrl: "/api" }),
@@ -63,6 +68,15 @@ export const consoleApi = createApi({
         { type: "Run", id: runId },
         { type: "Run", id: `${runId}:events` },
         "Run"
+      ]
+    }),
+    stopRun: builder.mutation<StopResponse, number>({
+      query: (runId) => ({ url: `/runs/${runId}/stop`, method: "POST" }),
+      invalidatesTags: (_result, _error, runId) => [
+        { type: "Run", id: runId },
+        { type: "Run", id: `${runId}:events` },
+        "Run",
+        "Job"
       ]
     }),
     startScrape: builder.mutation<AutomationRun, ScrapeRequest>({
@@ -153,6 +167,7 @@ export const {
   useReviewJobEligibilityMutation,
   useStartLoginCaptureMutation,
   useStartScrapeMutation,
+  useStopRunMutation,
   useTailorResumeMutation,
   useUpdateEligibilityOverrideMutation,
   useUpdateJobStatusMutation

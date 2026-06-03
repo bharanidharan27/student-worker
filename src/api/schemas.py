@@ -129,6 +129,11 @@ class ContinueRunResponse(BaseModel):
     run: AutomationRunResponse
 
 
+class StopRunResponse(BaseModel):
+    accepted: bool
+    run: AutomationRunResponse
+
+
 class JobResponse(BaseModel):
     id: int
     workday_id: str | None = None

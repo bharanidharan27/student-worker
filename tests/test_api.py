@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from pathlib import Path
@@ -345,6 +346,34 @@ def test_api_continue_unblocks_waiting_run(tmp_path: Path) -> None:
     assert completed is not None
     assert completed["status"] == "completed"
     assert '"continued":true' in completed["result_json"]
+
+
+def test_api_stop_run_interrupts_active_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+    started = threading.Event()
+
+    def action(context):
+        started.set()
+        while True:
+            context.raise_if_stopped()
+            time.sleep(0.02)
+
+    with TestClient(app) as client:
+        run_id = service.submit("scrape", {}, action)
+        assert started.wait(timeout=2)
+
+        response = client.post(f"/api/runs/{run_id}/stop")
+        interrupted = _wait_for_status(db_path, run_id, "interrupted")
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert interrupted is not None
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error"] == "Run stopped by user."
+    assert "Stop requested from UI." in [event["message"] for event in events.json()["events"]]
 
 
 def test_api_startup_marks_stale_runs_interrupted(tmp_path: Path) -> None:
