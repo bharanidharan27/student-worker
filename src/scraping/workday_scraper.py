@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL
 from src.auth.session_check import auth_state_exists, evaluate_session_page
@@ -221,6 +222,7 @@ def scrape_workday_jobs(
     idle_rounds: int = 3,
     click_timeout_ms: int = 5_000,
     debug_dump_dir: Path | None = None,
+    stop_requested: Callable[[], None] | None = None,
 ) -> ScrapeSummary:
     if not auth_state_exists(auth_state_path):
         raise FileNotFoundError(
@@ -241,18 +243,22 @@ def scrape_workday_jobs(
     processed_card_keys: set[str] = set()
     jobs_seen = 0
 
+    _check_stop(stop_requested)
     print(f"Opening Workday jobs page: {workday_url}", flush=True)
     with sync_playwright() as playwright:
+        _check_stop(stop_requested)
         browser = playwright.chromium.launch(headless=headless)
         context = browser.new_context(storage_state=str(auth_state_path))
         page = context.new_page()
 
         try:
+            _check_stop(stop_requested)
             page.goto(workday_url, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=15_000)
             except PlaywrightTimeoutError:
                 pass
+            _check_stop(stop_requested)
 
             page_text = _safe_body_text(page)
             if not evaluate_session_page(page.url, page_text):
@@ -266,6 +272,7 @@ def scrape_workday_jobs(
             previous_seen_count = 0
 
             for scroll_number in range(1, max_scrolls + 1):
+                _check_stop(stop_requested)
                 if _is_job_detail_page(page):
                     print("Detected job details page before scan; returning to results.", flush=True)
                     if not _return_to_results_page(page, workday_url, wait_ms):
@@ -303,6 +310,7 @@ def scrape_workday_jobs(
                         break
 
                 for card_index, card in enumerate(cards):
+                    _check_stop(stop_requested)
                     if limit is not None and jobs_seen >= limit:
                         break
                     if not _has_results_list(page):
@@ -322,6 +330,7 @@ def scrape_workday_jobs(
                         continue
 
                     try:
+                        _check_stop(stop_requested)
                         clicked = _click_ordered_result_card(page, card, cards, card_index, click_timeout_ms)
                         if not clicked:
                             continue
@@ -329,6 +338,7 @@ def scrape_workday_jobs(
                         continue
 
                     page.wait_for_timeout(wait_ms)
+                    _check_stop(stop_requested)
                     if not _wait_for_job_detail_page(page, wait_ms, attempts=8):
                         print(
                             f"Could not confirm job details page after clicking {card.title}; returning to results.",
@@ -341,6 +351,7 @@ def scrape_workday_jobs(
                         _return_to_results_page(page, workday_url, wait_ms)
                         continue
 
+                    _check_stop(stop_requested)
                     workday_job = build_workday_job(
                         card_title=card.title,
                         detail_text=detail_text,
@@ -353,6 +364,7 @@ def scrape_workday_jobs(
                             break
                         continue
 
+                    _check_stop(stop_requested)
                     seen_workday_ids.add(workday_job.workday_id)
                     processed_card_keys.add(card_key)
                     jobs_seen += 1
@@ -367,6 +379,7 @@ def scrape_workday_jobs(
                     if not _return_to_results_page(page, workday_url, wait_ms):
                         _write_debug_dump(page, debug_dump_dir, f"scan_{scroll_number}_return_failed")
                         break
+                    _check_stop(stop_requested)
 
                 if limit is not None and jobs_seen >= limit:
                     print(f"Reached scrape limit of {limit}.", flush=True)
@@ -388,6 +401,7 @@ def scrape_workday_jobs(
                     print("Stopping because no new jobs appeared after repeated scans.", flush=True)
                     break
 
+                _check_stop(stop_requested)
                 page.mouse.wheel(0, 2_000)
                 page.wait_for_timeout(wait_ms)
         finally:
@@ -398,6 +412,11 @@ def scrape_workday_jobs(
         jobs_saved=len(saved_local_ids),
         job_ids=saved_local_ids,
     )
+
+
+def _check_stop(stop_requested: Callable[[], None] | None) -> None:
+    if stop_requested is not None:
+        stop_requested()
 
 
 def _collect_ordered_result_cards(page) -> list[JobCard]:

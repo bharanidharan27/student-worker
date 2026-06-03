@@ -249,6 +249,16 @@ a {
   color: #fff;
 }
 
+.button-danger {
+  border-color: #d8aaa3;
+  background: #fff7f6;
+  color: #8e3029;
+}
+
+.button-danger:hover {
+  border-color: #ba6e63;
+}
+
 .icon-button {
   width: 36px;
   padding: 0;

@@ -1,8 +1,8 @@
 import { skipToken } from "@reduxjs/toolkit/query";
-import { CheckCircle2, Loader2, Play, RotateCw } from "lucide-react";
+import { CheckCircle2, Loader2, Play, RotateCw, StopCircle } from "lucide-react";
 import type { ReactElement } from "react";
 
-import { useContinueRunMutation, useGetRunEventsQuery, useGetRunQuery } from "../services/api";
+import { useContinueRunMutation, useGetRunEventsQuery, useGetRunQuery, useStopRunMutation } from "../services/api";
 import { isActiveRunStatus } from "../utils/runStatus";
 import { StatusPill } from "./StatusPill";
 
@@ -21,6 +21,7 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
     pollingInterval: active ? 2_000 : 0
   });
   const [continueRun, continueState] = useContinueRunMutation();
+  const [stopRun, stopState] = useStopRunMutation();
 
   if (!runId) {
     return (
@@ -40,6 +41,22 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
         <div className="header-actions">
           {run && <StatusPill value={run.status} />}
           {active && <Loader2 className="spin" size={18} aria-label="Running" />}
+          {run && active ? (
+            <button
+              className="button button-danger"
+              type="button"
+              onClick={() => void stopRun(run.id)}
+              disabled={stopState.isLoading}
+              title="Stop this run after the current safe checkpoint"
+            >
+              {stopState.isLoading ? (
+                <Loader2 className="spin" size={16} aria-hidden="true" />
+              ) : (
+                <StopCircle size={16} aria-hidden="true" />
+              )}
+              Stop Run
+            </button>
+          ) : null}
         </div>
       </header>
 
