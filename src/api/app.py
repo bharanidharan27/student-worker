@@ -208,6 +208,7 @@ def create_app(
                 click_timeout_ms=body.click_timeout_ms,
                 debug_dump_dir=Path(body.debug_dump_dir) if body.debug_dump_dir else None,
                 stop_requested=context.raise_if_stopped,
+                progress=context.set_step,
             )
             return asdict(summary)
 
