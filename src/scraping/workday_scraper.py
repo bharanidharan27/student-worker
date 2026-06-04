@@ -223,6 +223,7 @@ def scrape_workday_jobs(
     click_timeout_ms: int = 5_000,
     debug_dump_dir: Path | None = None,
     stop_requested: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> ScrapeSummary:
     if not auth_state_exists(auth_state_path):
         raise FileNotFoundError(
@@ -244,6 +245,7 @@ def scrape_workday_jobs(
     jobs_seen = 0
 
     _check_stop(stop_requested)
+    _set_progress(progress, "Opening Workday jobs page.")
     print(f"Opening Workday jobs page: {workday_url}", flush=True)
     with sync_playwright() as playwright:
         _check_stop(stop_requested)
@@ -265,6 +267,7 @@ def scrape_workday_jobs(
                 raise SessionExpiredError(
                     "Saved Workday session appears expired. Run `python -m src.auth.login_capture` again."
                 )
+            _set_progress(progress, "Saved session is valid. Starting job extraction.")
             print("Saved session is valid. Starting job extraction.", flush=True)
             _reset_results_scroll_to_top(page, wait_ms)
 
@@ -273,6 +276,7 @@ def scrape_workday_jobs(
 
             for scroll_number in range(1, max_scrolls + 1):
                 _check_stop(stop_requested)
+                _set_progress(progress, f"Scanning Workday results {scroll_number}/{max_scrolls}.")
                 if _is_job_detail_page(page):
                     print("Detected job details page before scan; returning to results.", flush=True)
                     if not _return_to_results_page(page, workday_url, wait_ms):
@@ -283,6 +287,10 @@ def scrape_workday_jobs(
 
                 cards = _collect_ordered_result_cards(page)
                 visible_count = len(cards)
+                _set_progress(
+                    progress,
+                    f"Scan {scroll_number}/{max_scrolls}: found {visible_count} visible candidate card(s).",
+                )
                 print(
                     f"Scan {scroll_number}/{max_scrolls}: found {visible_count} visible candidate card(s).",
                     flush=True,
@@ -368,20 +376,26 @@ def scrape_workday_jobs(
                     seen_workday_ids.add(workday_job.workday_id)
                     processed_card_keys.add(card_key)
                     jobs_seen += 1
+                    _set_progress(progress, f"Saving {jobs_seen}{_limit_suffix(limit)}: {workday_job.title}.")
                     local_id = store_workday_job(workday_job, db_path=db_path)
                     saved_local_ids.append(local_id)
+                    _set_progress(progress, f"Saved {jobs_seen}{_limit_suffix(limit)}: {workday_job.title}.")
                     print(
                         f"Saved {jobs_seen}{_limit_suffix(limit)}: {workday_job.title} "
                         f"({workday_job.workday_id})"
                         f"{_posting_date_suffix(workday_job.posting_date)}",
                         flush=True,
                     )
+                    _check_stop(stop_requested)
+                    _set_progress(progress, "Returning to Workday results page.")
                     if not _return_to_results_page(page, workday_url, wait_ms):
                         _write_debug_dump(page, debug_dump_dir, f"scan_{scroll_number}_return_failed")
                         break
                     _check_stop(stop_requested)
 
                 if limit is not None and jobs_seen >= limit:
+                    _check_stop(stop_requested)
+                    _set_progress(progress, f"Reached scrape limit of {limit}.")
                     print(f"Reached scrape limit of {limit}.", flush=True)
                     break
 
@@ -417,6 +431,11 @@ def scrape_workday_jobs(
 def _check_stop(stop_requested: Callable[[], None] | None) -> None:
     if stop_requested is not None:
         stop_requested()
+
+
+def _set_progress(progress: Callable[[str], None] | None, step: str) -> None:
+    if progress is not None:
+        progress(step)
 
 
 def _collect_ordered_result_cards(page) -> list[JobCard]:
