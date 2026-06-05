@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.storage.db import (
+    ACTIVE_AUTOMATION_RUN_STATUSES,
     DEFAULT_DB_PATH,
     append_automation_run_log,
     create_automation_run,
@@ -143,9 +144,28 @@ class AutomationService:
 
         with self._lock:
             event = self._continue_events.get(run_id)
+            future = self._futures.get(run_id)
+        if event is None and row["status"] in ACTIVE_AUTOMATION_RUN_STATUSES:
+            append_automation_run_log(
+                run_id,
+                "Continue requested, but this API process is no longer managing the run.",
+                self.db_path,
+                "error",
+            )
+            update_automation_run(
+                run_id,
+                self.db_path,
+                status="interrupted",
+                error="API server lost connection to this run. Start it again.",
+                current_step="Interrupted.",
+                mark_finished=True,
+            )
+            return True
         append_automation_run_log(run_id, "Continue signal received from UI.", self.db_path)
         if event is not None:
             event.set()
+        elif future is None:
+            append_automation_run_log(run_id, "Continue ignored because this run is already finished.", self.db_path)
         return True
 
     def stop_run(self, run_id: int) -> bool:
@@ -166,6 +186,25 @@ class AutomationService:
                 continue_event.set()
 
         append_automation_run_log(run_id, "Stop requested from UI.", self.db_path)
+        if future is None:
+            update_automation_run(
+                run_id,
+                self.db_path,
+                status="interrupted",
+                error="API server lost connection to this run. Start it again.",
+                current_step="Stopped.",
+                mark_finished=True,
+            )
+            append_automation_run_log(
+                run_id,
+                "Stopped stale run record; no active worker was attached to this API process.",
+                self.db_path,
+            )
+            with self._lock:
+                self._continue_events.pop(run_id, None)
+                self._stop_events.pop(run_id, None)
+                self._futures.pop(run_id, None)
+            return True
         update_automation_run(
             run_id,
             self.db_path,

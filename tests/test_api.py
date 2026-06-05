@@ -348,6 +348,34 @@ def test_api_continue_unblocks_waiting_run(tmp_path: Path) -> None:
     assert '"continued":true' in completed["result_json"]
 
 
+def test_api_continue_interrupts_stale_waiting_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    with TestClient(app) as client:
+        run_id = create_automation_run(
+            "login_capture",
+            {},
+            db_path=db_path,
+            status="waiting_for_user",
+            current_step="Press Enter here after the jobs page loads...",
+        )
+
+        response = client.post(f"/api/runs/{run_id}/continue")
+        interrupted = get_automation_run(run_id, db_path)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert interrupted is not None
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error"] == "API server lost connection to this run. Start it again."
+    assert "Continue requested, but this API process is no longer managing the run." in [
+        event["message"] for event in events.json()["events"]
+    ]
+
+
 def test_api_stop_run_interrupts_active_run(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.sqlite"
     service = AutomationService(db_path)
@@ -374,6 +402,34 @@ def test_api_stop_run_interrupts_active_run(tmp_path: Path) -> None:
     assert interrupted["status"] == "interrupted"
     assert interrupted["error"] == "Run stopped by user."
     assert "Stop requested from UI." in [event["message"] for event in events.json()["events"]]
+
+
+def test_api_stop_interrupts_stale_active_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    with TestClient(app) as client:
+        run_id = create_automation_run(
+            "scrape",
+            {},
+            db_path=db_path,
+            status="running",
+            current_step="Scraping Workday job listings.",
+        )
+
+        response = client.post(f"/api/runs/{run_id}/stop")
+        interrupted = get_automation_run(run_id, db_path)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert interrupted is not None
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error"] == "API server lost connection to this run. Start it again."
+    assert "Stopped stale run record; no active worker was attached to this API process." in [
+        event["message"] for event in events.json()["events"]
+    ]
 
 
 def test_api_startup_marks_stale_runs_interrupted(tmp_path: Path) -> None:

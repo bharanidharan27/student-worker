@@ -46,7 +46,7 @@ export function SessionPage(): ReactElement {
             title="Capture login"
           >
             <KeyRound size={16} aria-hidden="true" />
-            Capture
+            Login
           </button>
         </div>
       </header>
