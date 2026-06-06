@@ -264,6 +264,11 @@ a {
   padding: 0;
 }
 
+.icon-button-small {
+  width: 28px;
+  min-height: 28px;
+}
+
 .metrics-band,
 .panel,
 .detail-pane,
