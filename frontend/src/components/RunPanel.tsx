@@ -20,8 +20,17 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
   const eventsQuery = useGetRunEventsQuery(runId ?? skipToken, {
     pollingInterval: active ? 2_000 : 0
   });
+  const logsRefreshing = runQuery.isFetching || eventsQuery.isFetching;
   const [continueRun, continueState] = useContinueRunMutation();
   const [stopRun, stopState] = useStopRunMutation();
+
+  function refreshLogs(): void {
+    if (!runId) {
+      return;
+    }
+    void runQuery.refetch();
+    void eventsQuery.refetch();
+  }
 
   if (!runId) {
     return (
@@ -99,7 +108,16 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
 
       <div className="log-header">
         <h3>Logs</h3>
-        <RotateCw size={15} aria-hidden="true" />
+        <button
+          className="icon-button icon-button-small"
+          type="button"
+          onClick={refreshLogs}
+          disabled={logsRefreshing}
+          aria-label="Refresh logs"
+          title="Refresh logs"
+        >
+          <RotateCw className={logsRefreshing ? "spin" : undefined} size={15} aria-hidden="true" />
+        </button>
       </div>
       <div className="log-box" role="log" aria-live="polite">
         {eventsQuery.data?.events.length ? (
