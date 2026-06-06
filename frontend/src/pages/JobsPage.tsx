@@ -108,6 +108,14 @@ export function JobsPage(): ReactElement {
     });
   }
 
+  function selectJob(jobId: number): void {
+    setSelectedJobId(jobId);
+    if (!showDetails) {
+      setShowDetails(true);
+      rememberDetailPreference(true);
+    }
+  }
+
   async function mark(status: "reviewing" | "applied" | "skipped" | "new", note?: string): Promise<void> {
     if (!selectedJobId) {
       return;
@@ -301,10 +309,11 @@ export function JobsPage(): ReactElement {
                 <tr
                   key={job.id}
                   className={selectedJobId === job.id ? "selected-row" : ""}
-                  onClick={() => setSelectedJobId(job.id)}
+                  onClick={() => selectJob(job.id)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
-                      setSelectedJobId(job.id);
+                      event.preventDefault();
+                      selectJob(job.id);
                     }
                   }}
                   tabIndex={0}
