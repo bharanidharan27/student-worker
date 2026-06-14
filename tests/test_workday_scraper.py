@@ -348,6 +348,32 @@ def test_store_workday_job_deduplicates_by_workday_id(tmp_path: Path) -> None:
     assert count_rows("jobs", db_path) == 1
 
 
+def test_store_workday_job_skips_eligibility_review_during_scrape(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    job = build_workday_job(
+        card_title="Software Developer Assistant",
+        detail_text="""
+        Job ID: R333333
+        Location: ASU Tempe campus
+        Responsibilities: Develop Python APIs and automate backend workflows.
+        """,
+        url="https://www.myworkday.com/asu/job/R333333",
+    )
+
+    def fail_eligibility_review(*args, **kwargs):
+        raise AssertionError("scraping should not run eligibility review")
+
+    monkeypatch.setattr(
+        "src.scraping.workday_scraper.assess_job_eligibility",
+        fail_eligibility_review,
+        raising=False,
+    )
+
+    local_id = store_workday_job(job, db_path=db_path)
+
+    assert local_id > 0
+
+
 def test_scrape_requires_existing_auth_state(tmp_path: Path) -> None:
     missing_auth = tmp_path / "playwright" / ".auth" / "asu_workday.json"
 

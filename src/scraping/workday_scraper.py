@@ -12,7 +12,6 @@ from typing import Callable
 
 from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL
 from src.auth.session_check import auth_state_exists, evaluate_session_page
-from src.eligibility.assessor import assess_job_eligibility
 from src.matching.fit_scorer import score_fit
 from src.scraping.job_detail_parser import parse_job_description
 from src.storage.db import DEFAULT_DB_PATH, upsert_job
@@ -186,7 +185,6 @@ def store_workday_job(job: WorkdayJob, db_path: Path = DEFAULT_DB_PATH) -> int:
     )
 
     fit = score_fit(parsed, job.raw_description)
-    eligibility = assess_job_eligibility(parsed, job.raw_description)
     record = JobRecord(
         workday_id=job.workday_id,
         title=job.title,
@@ -204,8 +202,8 @@ def store_workday_job(job: WorkdayJob, db_path: Path = DEFAULT_DB_PATH) -> int:
         recommended_resume_type=fit.recommended_resume_type,
         recommended_resume_name=fit.recommended_resume_name,
         recommended_resume_path=fit.recommended_resume_path,
-        eligibility_status=eligibility.status,
-        eligibility_json=eligibility.model_dump_json(indent=2),
+        eligibility_status=None,
+        eligibility_json=None,
         status="new",
     )
     return upsert_job(record, db_path=db_path)
