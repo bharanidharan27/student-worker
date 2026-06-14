@@ -14,7 +14,9 @@ from src.apply_automation import (
     _looks_like_later_step,
     _looks_like_review_page,
     _resume_already_uploaded,
+    _should_hold_browser_open_for_review,
     _upload_resume,
+    _wait_for_apply_entry_page,
     _wait_for_user_to_advance,
     auto_apply_job,
     auto_apply_queue,
@@ -186,6 +188,48 @@ def test_extract_applied_marker_accepts_lowercase_ui_text() -> None:
     assert _extract_applied_marker(text) == "applied 04/30/2026, 1:08 PM"
 
 
+def test_wait_for_apply_entry_page_waits_for_lazy_workday_detail(tmp_path: Path) -> None:
+    resume_path = tmp_path / "Bharanidharan_Resume.pdf"
+    resume_path.write_text("resume", encoding="utf-8")
+    job = _job_with_resume(resume_path)
+
+    class LazyDetailPage:
+        def __init__(self):
+            self.waits = 0
+            self.texts = [
+                "Skip to main content\nAccessibility Overview",
+                "Skip to main content\nAccessibility Overview",
+                "View Job Posting Details\nOffice Aide\nApply\nJob Profile:\nStudent Worker",
+            ]
+
+        def wait_for_timeout(self, ms: int) -> None:
+            self.waits += 1
+
+        def locator(self, selector: str):
+            outer = self
+
+            class Locator:
+                first = property(lambda self: self)
+
+                def count(self) -> int:
+                    return 1 if selector == "body" else 0
+
+                def inner_text(self, timeout: int) -> str:
+                    return outer.texts[min(outer.waits, len(outer.texts) - 1)]
+
+                def nth(self, _index: int):
+                    return self
+
+            return Locator()
+
+    page = LazyDetailPage()
+
+    text = _wait_for_apply_entry_page(page, job, timeout_ms=5_000, poll_ms=500)
+
+    assert "Apply" in text
+    assert page.waits == 2
+
+
 def test_manual_submission_confirmation_detection() -> None:
     assert _looks_like_manual_submission_confirmation("Your application has been submitted.")
     assert not _looks_like_manual_submission_confirmation("Review Submit Terms")
@@ -235,6 +279,18 @@ def test_hold_browser_open_for_review_marks_manual_submit_when_confirmed() -> No
 
     assert held.submitted is True
     assert held.needs_review is False
+
+
+def test_headed_browser_hold_is_only_for_successful_review_handoffs() -> None:
+    assert _should_hold_browser_open_for_review(
+        AutoApplyResult(10, True, False, True, "Application filled through Review.")
+    )
+    assert not _should_hold_browser_open_for_review(
+        AutoApplyResult(10, False, False, True, "Apply button was not found.")
+    )
+    assert not _should_hold_browser_open_for_review(
+        AutoApplyResult(10, False, False, True, "Saved Workday session appears expired.")
+    )
 
 
 def test_resume_already_uploaded_detects_file_name(tmp_path: Path) -> None:

@@ -15,6 +15,8 @@ from src.storage.db import DEFAULT_DB_PATH, get_job_by_id, list_apply_queue, upd
 # How long to wait for the Workday virus-scan / upload to complete (ms).
 # Workday's async scanner can take 20-30 s on slow connections.
 RESUME_UPLOAD_TIMEOUT_MS = 45_000
+APPLY_ENTRY_READY_TIMEOUT_MS = 45_000
+APPLY_ENTRY_READY_POLL_MS = 1_000
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,10 @@ ApplyDriver = Callable[
     [AutoApplyJob, bool, bool, Path | None, Path, int, ApplicationProfile],
     AutoApplyResult,
 ]
+
+
+def _should_hold_browser_open_for_review(result: AutoApplyResult) -> bool:
+    return result.ok and result.needs_review and not result.submitted
 
 
 def auto_apply_job(
@@ -190,7 +196,7 @@ def _run_playwright_apply(
         ) from exc
 
     def finish(result: AutoApplyResult, page) -> AutoApplyResult:
-        if headed and result.needs_review:
+        if headed and _should_hold_browser_open_for_review(result):
             return _hold_browser_open_for_review(
                 page,
                 result,
@@ -214,7 +220,7 @@ def _run_playwright_apply(
             except PlaywrightTimeoutError:
                 pass
 
-            page_text = _safe_body_text(page)
+            page_text = _wait_for_apply_entry_page(page, job)
             if not evaluate_session_page(page.url, page_text):
                 return finish(
                     AutoApplyResult(
@@ -228,8 +234,7 @@ def _run_playwright_apply(
                 )
 
             if _open_selected_job_from_results(page, job, timeout_ms):
-                page.wait_for_timeout(1_000)
-                page_text = _safe_body_text(page)
+                page_text = _wait_for_apply_entry_page(page, job)
 
             applied_marker = _extract_applied_marker(page_text)
             if applied_marker:
@@ -243,8 +248,7 @@ def _run_playwright_apply(
 
             if not _click_apply(page, timeout_ms):
                 if _open_selected_job_from_results(page, job, timeout_ms):
-                    page.wait_for_timeout(1_000)
-                    page_text = _safe_body_text(page)
+                    page_text = _wait_for_apply_entry_page(page, job)
                     applied_marker = _extract_applied_marker(page_text)
                     if applied_marker:
                         return AutoApplyResult(
@@ -284,6 +288,74 @@ def _run_playwright_apply(
         finally:
             if not keep_open_for_review:
                 browser.close()
+
+
+def _wait_for_apply_entry_page(
+    page,
+    job: AutoApplyJob,
+    timeout_ms: int = APPLY_ENTRY_READY_TIMEOUT_MS,
+    poll_ms: int = APPLY_ENTRY_READY_POLL_MS,
+) -> str:
+    elapsed_ms = 0
+    while True:
+        body_text = _safe_body_text(page)
+        if _looks_like_apply_entry_ready(page, job, body_text):
+            return body_text
+        if elapsed_ms >= timeout_ms:
+            return body_text
+        wait_ms = min(poll_ms, timeout_ms - elapsed_ms)
+        try:
+            page.wait_for_timeout(wait_ms)
+        except Exception:
+            return body_text
+        elapsed_ms += wait_ms
+
+
+def _looks_like_apply_entry_ready(page, job: AutoApplyJob, body_text: str) -> bool:
+    lowered = body_text.lower()
+    title = job.title.strip().lower()
+    if _extract_applied_marker(body_text):
+        return True
+    if _current_section_label(page) is not None:
+        return True
+    if title and title in lowered and any(
+        marker in lowered
+        for marker in (
+            "apply",
+            "applied",
+            "job profile",
+            "job family",
+            "view job posting details",
+        )
+    ):
+        return True
+    return _has_apply_action(page)
+
+
+def _has_apply_action(page) -> bool:
+    try:
+        if page.get_by_role("button", name=re.compile(r"\bapply\b", re.IGNORECASE)).count() > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        if page.get_by_role("link", name=re.compile(r"\bapply\b", re.IGNORECASE)).count() > 0:
+            return True
+    except Exception:
+        pass
+    for selector in (
+        "button:has-text('Apply')",
+        "a:has-text('Apply')",
+        "[role='button']:has-text('Apply')",
+        "[data-automation-id='applyButton']",
+        "[data-automation-id='adventureButton']",
+    ):
+        try:
+            if page.locator(selector).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 @dataclass(frozen=True)
