@@ -1,96 +1,91 @@
 # ASU Student Jobs Resume Assistant
 
-A local human-in-the-loop assistant for collecting ASU student jobs, scoring fit, and generating tailored resume materials.
+A local, human-in-the-loop assistant for collecting ASU student job postings, scoring fit, selecting resumes, and guiding guarded Workday applications.
+
+The project is designed for personal use with your own ASU Workday session. It stores job data locally in SQLite and keeps the final application decision in your hands.
 
 ## What It Does
 
-- Accepts a pasted ASU student job description.
-- Can bulk collect ASU Workday student job descriptions from your own logged-in browser session.
-- Parses the posting into structured fields.
-- Scores fit against Bharanidharan's profile using local rule-based logic.
-- Recommends a broad resume type and the exact best PDF from `resumes/master/`.
-- Saves a markdown fit report locally.
-- Stores deduplicated job records in SQLite.
+- Parses pasted job descriptions into structured job details.
+- Scrapes ASU Workday student job postings from a manually authenticated browser session.
+- Scores each job against a private applicant profile and recommends the best resume.
+- Reviews eligibility and resume gaps with local rules, plus an optional LLM provider.
+- Creates conservative tailored resume copies from extracted resume sources.
+- Tracks application status, notes, run history, and generated documents in SQLite.
+- Provides both CLI workflows and a local React/FastAPI dashboard.
+- Can run guarded auto-apply flows, pausing when Workday needs manual review.
 
-## What It Does Not Do
+## Safety Boundaries
 
-- Does not bypass ASU SSO.
-- Does not ask for or store an ASU password.
-- Does not store Duo/MFA secrets.
-- Does not bypass ASU SSO or submit applications unless you explicitly run auto-apply with `--submit`.
-- Does not commit Workday session cookies.
+- Does not bypass ASU SSO, Duo, or MFA.
+- Does not ask for or store your ASU password.
+- Does not commit Workday cookies or local auth state.
+- Does not fabricate unsupported resume claims.
+- Does not click final Workday submit unless you explicitly enable submission.
+- Stops or pauses when Workday shows required fields, validation errors, or an unexpected page.
+
+Private runtime files are ignored by git, including `.env`, `data/jobs.sqlite`, `data/applicant_profile.yaml`, `outputs/`, `playwright/.auth/`, `resumes/extracted/`, and `resumes/tailored/`.
+
+## Project Layout
+
+- `src/auth/` - Workday login capture and saved-session checks.
+- `src/scraping/` - ASU Workday job extraction.
+- `src/matching/` - job parsing, fit scoring, keyword extraction, and resume selection.
+- `src/eligibility/` - local and optional LLM eligibility review.
+- `src/resume_tailoring.py` - conservative resume tailoring from extracted sources.
+- `src/apply_cli.py` and `src/apply_automation.py` - queue management and guarded auto-apply.
+- `src/api/` - local FastAPI API for the dashboard.
+- `frontend/` - Vite React dashboard.
+- `tests/` - Python test coverage for parsing, scoring, storage, scraping, API, and apply flows.
 
 ## Setup
 
-```bash
+Create a Python environment and install the Python dependencies:
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-playwright install
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m playwright install
 ```
 
-If you use the Windows Python launcher, replace `python` with `py` after Python is installed.
+Create local configuration files:
 
-## Initialize Storage
-
-```bash
+```powershell
+copy .env.example .env
+copy data\applicant_profile.example.yaml data\applicant_profile.yaml
 python -m src.storage.db --init
 ```
 
-This creates `data/jobs.sqlite` with the local job and generated-document tables.
+Edit `data/applicant_profile.yaml` with non-contact facts that are safe to use for matching and eligibility checks, such as degree level, program, availability, work-study status, technologies, experience domains, certifications, portfolio links, and resume keywords.
 
-## Generate a Manual Job Report
+LLM review is optional. Without an API key, the local rules still run and nuanced cases are marked for review. To enable an LLM provider, fill in the `LLM_*` values in `.env`.
 
-Paste a job description interactively:
+## Dashboard
 
-```bash
-python -m src.manual_job_report
+Start the API:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn src.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Or read a text file and choose an output path:
+Start the frontend in a second terminal:
 
-```bash
-python -m src.manual_job_report --input-file path\to\job.txt --output outputs\reports\report.md
+```powershell
+cd frontend
+npm install
+npm run dev
 ```
 
-The report includes parsed fields, fit score, fit label, reasons, gaps, job family, exact recommended resume, and extracted keywords.
+Open `http://127.0.0.1:5173`.
 
-## Eligibility and Resume Gap Advisor
+The dashboard includes session capture, session checks, scrape runs, job review, eligibility review, resume tailoring, guarded apply controls, and persisted run history. The API accepts only local browser requests.
 
-The app now stores an eligibility review for each scraped or pasted job. It flags blockers such as undergraduate-only roles, required certifications, federal work-study constraints, unclear hours, missing required technologies, and experience requirements. It also lists truthful resume changes and non-resume actions to complete before applying.
+## Workday Session
 
-Create your private redacted profile from the tracked example:
+Workday requires ASU SSO. Capture your own browser session once:
 
-```bash
-copy data\applicant_profile.example.yaml data\applicant_profile.yaml
-```
-
-`data/applicant_profile.yaml` is ignored by git. Keep it limited to non-contact facts: degree level, program, hours, work-study status, technologies, domains of experience, certifications, portfolio links, and resume keywords.
-
-LLM use is optional. Without a key, local rules still run and nuanced cases are marked for review. To enable Gemini or an OpenAI-compatible provider, add values like these to `.env`:
-
-```bash
-copy .env.example .env
-
-LLM_PROVIDER=gemini
-LLM_API_KEY=your_api_key_here
-LLM_MODEL=gemini-2.5-flash
-LLM_TIMEOUT_SECONDS=60
-LLM_HTTP_RETRIES=2
-LLM_REVIEW_DELAY_SECONDS=1
-```
-
-For compatible providers, set `LLM_BASE_URL` and `LLM_MODEL` for that provider. `LLM_REVIEW_DELAY_SECONDS` spaces out bulk "Review all" calls so free-tier providers are less likely to return rate-limit errors. Ineligible jobs are hidden from the apply queue unless you enable the eligibility override after manual review.
-
-The Jobs dashboard also has a `Tailor Resume` action. It copies the selected job's recommended extracted DOCX from `resumes/extracted/`, writes a tailored copy under `resumes/tailored/<job-id>-<job-title>/`, and adds only missing requirement items that are supported by the redacted profile or another extracted resume. Unsupported missing items are listed in `tailoring_notes.md` beside the generated resume instead of being fabricated.
-
-## Bulk Workday Extraction
-
-The Workday jobs page requires ASU SSO. This app does not bypass login, ask for your password, or store credentials. You log in manually once, and Playwright saves local browser session state in `playwright/.auth/asu_workday.json`.
-
-Capture the login session:
-
-```bash
+```powershell
 python -m src.auth.login_capture
 ```
 
@@ -98,169 +93,133 @@ A browser opens. Complete ASU SSO and Duo/MFA yourself, wait for the student job
 
 Check whether the saved session still works:
 
-```bash
+```powershell
 python -m src.auth.session_check
 ```
 
-Run a small scrape first:
+The saved Playwright auth state is written under `playwright/.auth/` and is ignored by git.
 
-```bash
-python -m src.scraping.workday_scraper --limit 10
-```
+## Scrape Jobs
 
-If Workday behaves differently than expected, run with a visible browser:
+Start with a small visible scrape:
 
-```bash
+```powershell
 python -m src.scraping.workday_scraper --limit 10 --headed
 ```
 
-The scraper opens job cards gently, extracts job-description text, scores each job, and saves deduplicated rows to `data/jobs.sqlite`.
+The scraper opens job cards gently, extracts descriptions, scores each job, recommends a resume, and saves deduplicated rows to `data/jobs.sqlite`.
 
-If the terminal appears stuck after saving a few jobs, press `Ctrl+C`. Already saved jobs remain in SQLite. Then rerun a smaller visible scrape:
+Useful follow-up commands:
 
-```bash
-python -m src.scraping.workday_scraper --limit 6 --headed --max-scrolls 5 --idle-rounds 1
-```
-
-Check how many jobs are currently stored:
-
-```bash
+```powershell
 python -m src.storage.db --count jobs
-```
-
-Print saved jobs in scrape order:
-
-```bash
 python -m src.storage.db --list-jobs --limit 10
-```
-
-Refresh fit scores and exact resume recommendations for already scraped jobs without scraping again:
-
-```bash
 python -m src.matching.fit_scorer --rescore-db
 ```
 
-## Applying
+If Workday changes or the scraper reports no visible cards, capture a debug dump:
 
-The apply CLI can work as a local checklist/status tracker or as a guarded Workday auto-apply helper. It never bypasses SSO. You must capture your own login session first.
-
-### Pick a job, no ids required (recommended)
-
-Three no-friction ways to start an application:
-
-**Apply for the top-ranked job in one command:**
-
-```bash
-python -m src.apply_cli --auto-apply-next --headed --submit
-```
-
-This picks the highest-scoring job (`>= 70`) automatically, preferring `Strong Fit` before `Possible Fit`.
-
-**Pick from a numbered menu:**
-
-```bash
-python -m src.apply_cli --pick --headed --submit
-```
-
-You will see a list like this and only need to type a single digit:
-
-```
-Pick a job to auto-apply:
-
-  [1] Office Aide - WP Carey
-      fit: 92/100 Strong Fit | location: Tempe campus | posted: 04/30/2026 | status: new
-  [2] Sun Devil Card Aide
-      fit: 88/100 Strong Fit | location: Tempe campus | posted: 04/29/2026 | status: new
-  [3] Marketing Specialist
-      fit: 84/100 Strong Fit | location: Tempe campus | posted: 04/28/2026 | status: new
-
-Type the number of the job to apply for, or 'q' to quit.
-Your pick: 2
-```
-
-**Paste a Workday URL straight from your browser address bar:**
-
-```bash
-python -m src.apply_cli --auto-apply-url "https://asu.wd1.myworkdayjobs.com/...JR12345" --headed --submit
-```
-
-The tool finds the matching saved job by URL or Workday id and runs auto-apply.
-
-### Status tracking (optional)
-
-Print the ranked apply queue, mostly for inspection:
-
-```bash
-python -m src.apply_cli --queue --limit 10
-```
-
-Mark a job's status after you handle it:
-
-```bash
-python -m src.apply_cli --mark-reviewing 2
-python -m src.apply_cli --mark-applied 2
-python -m src.apply_cli --mark-skipped 5 --note "Not interested"
-```
-
-(These status commands still take a numeric id from `--queue`. They are bookkeeping only and do not start an application.)
-
-Auto-apply fills the fixed Workday sections shown in the current ASU flow: work authorization, ASU enrollment, federal work study, age 18+, Hispanic/Latino disclosure, and disability self-identification. It uses the recommended resume PDF for upload and the resume parser for experience fields.
-
-### Manual handoff on My Experience
-
-Workday's `My Experience` page contains required dropdowns the resume parser cannot supply (for example `Source`, education `Country`, `Degree`, and `Field of Study`). Auto-apply uploads the resume on Quick Apply, lets Workday parse it into `My Experience`, and then **pauses** so you can:
-
-1. Verify pre-filled work experience, education, and skills.
-2. Pick the missing dropdowns Workday flags as required.
-3. Click `Save and Continue` yourself.
-
-The terminal prints a `[auto-apply] Paused on 'my experience'` message while it waits. As soon as Workday navigates past `My Experience`, the tool resumes and auto-fills `Application Questions`, `Voluntary Disclosures`, and `Self Identify`. On `Review`, it stops unless `--submit` is provided; with `--submit`, it clicks the final `Submit`. The pause times out after 15 minutes and marks the job as `reviewing`.
-
-Allow final submit only when Workday does not show required-field blockers:
-
-```bash
-python -m src.apply_cli --auto-apply-next --headed --submit
-python -m src.apply_cli --pick --headed --submit
-```
-
-Auto-apply the ranked queue. By default this filters to jobs with score `>= 70`, preferring `Strong Fit` before `Possible Fit`:
-
-```bash
-python -m src.apply_cli --auto-apply-queue --limit 3 --headed
-python -m src.apply_cli --auto-apply-queue --limit 3 --headed --submit
-```
-
-If Workday shows required questions, validation errors, or an unexpected page shape, the automation stops and marks the job as `reviewing` instead of guessing.
-When running with `--headed`, the browser is left open on review/failure so you can inspect and fix the page manually.
-
-If Workday shows an existing status like `Applied 04/30/2026, 1:08 PM`, auto-apply marks the local job as `applied` instead of looking for an Apply button.
-
-For normal use, keep `--limit` small until the selectors are confirmed against the current Workday page.
-
-If the scraper reports `0 visible candidate card(s)`, capture a debug dump:
-
-```bash
+```powershell
 python -m src.scraping.workday_scraper --limit 10 --headed --max-scrolls 1 --idle-rounds 1 --debug-dump-dir outputs/debug
 ```
 
-That writes the current page text and screenshot to `outputs/debug/` so the selectors can be adjusted against the actual page state.
+If a scrape appears stuck after saving jobs, press `Ctrl+C`. Saved jobs remain in SQLite. Then retry with a smaller visible run:
 
-## React/FastAPI Dashboard
-
-The local dashboard wraps the same human-in-the-loop CLI modules with a FastAPI API and a React/Redux frontend.
-
-Start the API:
-
-```bash
-.venv\Scripts\python.exe -m uvicorn src.api.app:app --host 127.0.0.1 --port 8000
+```powershell
+python -m src.scraping.workday_scraper --limit 6 --headed --max-scrolls 5 --idle-rounds 1
 ```
 
-Start the frontend in another terminal:
+## Manual Job Reports
 
-```bash
+Paste a job description interactively:
+
+```powershell
+python -m src.manual_job_report
+```
+
+Or read from a text file:
+
+```powershell
+python -m src.manual_job_report --input-file path\to\job.txt --output outputs\reports\report.md
+```
+
+The report includes parsed fields, fit score, fit label, reasons, gaps, job family, recommended resume, extracted keywords, and eligibility notes.
+
+## Eligibility and Resume Tailoring
+
+Manual job reports store an eligibility review immediately. Scraped jobs can be reviewed from the dashboard, either one job at a time or in bulk.
+
+Eligibility review flags blockers and warnings such as undergraduate-only roles, federal work-study constraints, certification requirements, unclear hours, missing required technologies, and experience requirements. Ineligible jobs are hidden from the apply queue unless you manually enable the eligibility override.
+
+The dashboard `Tailor Resume` action creates a tailored copy under `resumes/tailored/<job-id>-<job-title>/`. It only adds missing requirement items supported by `data/applicant_profile.yaml` or another extracted resume source. Unsupported items are listed in `tailoring_notes.md`.
+
+## Apply Queue
+
+Print the ranked apply queue:
+
+```powershell
+python -m src.apply_cli --queue --limit 10
+```
+
+Show the next best apply packet:
+
+```powershell
+python -m src.apply_cli --next
+```
+
+Pick from a numbered menu and run guarded auto-apply:
+
+```powershell
+python -m src.apply_cli --pick --headed
+```
+
+Auto-apply the top-ranked eligible job:
+
+```powershell
+python -m src.apply_cli --auto-apply-next --headed
+```
+
+Auto-apply a small filtered queue:
+
+```powershell
+python -m src.apply_cli --auto-apply-queue --limit 3 --headed
+```
+
+Allow final submit only when you are ready and Workday shows no required-field blockers:
+
+```powershell
+python -m src.apply_cli --auto-apply-next --headed --submit
+```
+
+Status-only bookkeeping commands:
+
+```powershell
+python -m src.apply_cli --mark-reviewing 2
+python -m src.apply_cli --mark-applied 2
+python -m src.apply_cli --mark-skipped 5 --note "Not interested"
+python -m src.apply_cli --override-eligibility 7 --note "Manually reviewed"
+```
+
+During auto-apply, the tool uploads the recommended resume and fills supported fixed Workday sections. It pauses on `My Experience` so you can verify parsed experience, education, skills, and required dropdowns before continuing. On `Review`, it stops unless `--submit` is provided.
+
+## Testing
+
+Run the Python tests:
+
+```powershell
+pytest
+```
+
+Run the frontend tests:
+
+```powershell
 cd frontend
-npm install
-npm run dev
+npm test
 ```
 
-Open `http://127.0.0.1:5173`. The UI includes login capture, session checks, scrape runs, job review/status updates, guarded auto-apply controls, and persisted run history. Final Workday submission is off by default and requires an explicit confirmation toggle in the UI.
+Build the frontend:
+
+```powershell
+cd frontend
+npm run build
+```
