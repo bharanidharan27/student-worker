@@ -3,6 +3,7 @@ import { CheckCircle2, Eye, EyeOff, Loader2, Play, Send, ShieldAlert } from "luc
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useAuthPrompt } from "../components/AuthPromptContext";
 import { RunPanel } from "../components/RunPanel";
 import { StatusPill } from "../components/StatusPill";
 import {
@@ -52,6 +53,7 @@ export function ApplyPage(): ReactElement {
   const [applyJob, applyJobState] = useApplyJobMutation();
   const [applyQueue, applyQueueState] = useApplyQueueMutation();
   const [updateJobStatus, updateJobStatusState] = useUpdateJobStatusMutation();
+  const { requireSignIn } = useAuthPrompt();
   const [pendingJobId, setPendingJobId] = useState<number | null>(null);
   const runsQuery = useListRunsQuery(25, { pollingInterval: 2_000 });
   const selectedRunQuery = useGetRunQuery(runId ?? skipToken, {
@@ -94,6 +96,9 @@ export function ApplyPage(): ReactElement {
   }, [refetchQueue, selectedRunQuery.data]);
 
   async function startJob(jobId: number): Promise<void> {
+    if (!requireSignIn()) {
+      return;
+    }
     setPendingJobId(jobId);
     try {
       const run = await applyJob({ jobId, body: form }).unwrap();
@@ -104,6 +109,9 @@ export function ApplyPage(): ReactElement {
   }
 
   async function startQueue(): Promise<void> {
+    if (!requireSignIn()) {
+      return;
+    }
     const run = await applyQueue(form).unwrap();
     setRunId(run.id);
   }

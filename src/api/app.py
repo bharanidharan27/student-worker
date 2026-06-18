@@ -41,6 +41,7 @@ from src.apply_automation import (
     auto_apply_queue,
     _run_playwright_apply,
 )
+from src.auth.auth_meta import read_auth_meta
 from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL, capture_login_state
 from src.auth.session_check import auth_state_exists, check_session
 from src.eligibility.assessor import review_db_eligibility, review_stored_job_eligibility
@@ -151,6 +152,8 @@ def create_app(
                 browser_name=body.browser,
                 slow_mo_ms=body.slow_mo_ms,
                 wait_for_user=context.wait_for_continue,
+                display_name=body.display_name,
+                email=body.email,
             )
             return {"auth_state_path": str(saved_path), "message": "Saved Workday session state."}
 
@@ -433,11 +436,14 @@ def _session_status_response(auth_state_path: Path) -> SessionStatusResponse:
         if exists
         else None
     )
+    meta = read_auth_meta(auth_state_path) if exists else None
     return SessionStatusResponse(
         auth_state_path=str(auth_state_path),
         exists=exists,
         size_bytes=size_bytes,
         modified_at=modified_at,
+        display_name=meta.display_name if meta else None,
+        email=meta.email if meta else None,
     )
 
 

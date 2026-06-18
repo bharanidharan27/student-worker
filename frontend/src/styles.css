@@ -158,6 +158,188 @@ a {
   padding: 24px;
 }
 
+.shell-main {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #deded6;
+  background: #fdfdf9;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.topbar-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.topbar-title strong {
+  font-size: 14px;
+  color: #1c1d1a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.signed-in-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #e7f1ee;
+  color: #0d5a50;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.signed-in-pill--muted {
+  background: #efece4;
+  color: #6e7069;
+}
+
+.signed-in-pill-label {
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.signed-in-pill-name {
+  font-weight: 600;
+  color: inherit;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.button-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: #4c4e48;
+}
+
+.button-ghost:hover {
+  background: #f1efe7;
+  border-color: transparent;
+}
+
+.login-prompt-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 24, 22, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.login-prompt {
+  position: relative;
+  display: grid;
+  gap: 16px;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid #deded6;
+  border-radius: 12px;
+  background: #fff;
+  padding: 22px 22px 18px;
+  box-shadow: 0 18px 48px rgba(15, 22, 19, 0.28);
+}
+
+.login-prompt-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.login-prompt-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.login-prompt-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #e7f1ee;
+  color: #0d5a50;
+}
+
+.login-prompt-header h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  color: #1c1d1a;
+}
+
+.login-prompt-subtitle {
+  margin: 6px 0 0;
+  color: #4c4e48;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.login-prompt-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #deded6;
+}
+
+.login-prompt-status > div {
+  display: grid;
+  gap: 4px;
+  background: #fff;
+  padding: 12px 14px;
+}
+
+.login-prompt-status strong {
+  font-size: 14px;
+  color: #1c1d1a;
+  word-break: break-word;
+}
+
+.login-prompt-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.panel--compact {
+  gap: 10px;
+  padding: 12px;
+  background: #f8f8f2;
+}
+
 .page {
   display: grid;
   gap: 18px;
@@ -188,6 +370,13 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.panel-header-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
 }
 
 .page-header h1,

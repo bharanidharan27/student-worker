@@ -3,8 +3,6 @@ import {
   AlertTriangle,
   Check,
   ExternalLink,
-  Eye,
-  EyeOff,
   FilePenLine,
   Loader2,
   Lock,
@@ -42,16 +40,15 @@ const sortOptions: Array<{ label: string; value: JobSort }> = [
   { label: "Posted newest", value: "posted_desc" },
   { label: "Posted oldest", value: "posted_asc" }
 ];
-const JOB_DETAIL_STORAGE_KEY = "student-work-applier:showJobDetail";
 
 export function JobsPage(): ReactElement {
   const [filters, setFilters] = useState<JobFilters>({ limit: 100, sort: "best_fit" });
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [showDetails, setShowDetails] = useState<boolean>(() => loadDetailPreference());
+  const [selectionClosed, setSelectionClosed] = useState(false);
   const [eligibilityRunId, setEligibilityRunId] = useState<number | null>(null);
   const [resumeRunId, setResumeRunId] = useState<number | null>(null);
   const jobsQuery = useListJobsQuery(filters, { pollingInterval: 5_000 });
-  const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null || !showDetails });
+  const selectedQuery = useGetJobQuery(selectedJobId ?? 0, { skip: selectedJobId === null });
   const eligibilityRunQuery = useGetRunQuery(eligibilityRunId ?? skipToken, {
     pollingInterval: eligibilityRunId ? 2_000 : 0
   });
@@ -64,7 +61,7 @@ export function JobsPage(): ReactElement {
   const [reviewAllEligibility, reviewAllState] = useReviewAllEligibilityMutation();
   const [tailorResume, tailorResumeState] = useTailorResumeMutation();
 
-  const selected = showDetails ? selectedQuery.data : undefined;
+  const selected = selectedQuery.data;
   const jobs = jobsQuery.data?.jobs ?? [];
   const eligibilityRunActive = isActiveRunStatus(eligibilityRunQuery.data?.status);
   const resumeRunActive = isActiveRunStatus(resumeRunQuery.data?.status);
@@ -74,23 +71,23 @@ export function JobsPage(): ReactElement {
       setSelectedJobId(null);
       return;
     }
-    if (selectedJobId === null && jobs.length > 0) {
+    if (selectedJobId === null && jobs.length > 0 && !selectionClosed) {
       setSelectedJobId(jobs[0].id);
     }
     if (selectedJobId !== null && jobs.length > 0 && !jobs.some((job) => job.id === selectedJobId)) {
       setSelectedJobId(jobs[0].id);
     }
-  }, [jobs, selectedJobId]);
+  }, [jobs, selectedJobId, selectionClosed]);
 
   useEffect(() => {
     if (!eligibilityRunQuery.data || isActiveRunStatus(eligibilityRunQuery.data.status)) {
       return;
     }
     void jobsQuery.refetch();
-    if (selectedJobId !== null && showDetails) {
+    if (selectedJobId !== null) {
       void selectedQuery.refetch();
     }
-  }, [eligibilityRunQuery.data, jobsQuery, selectedJobId, selectedQuery, showDetails]);
+  }, [eligibilityRunQuery.data, jobsQuery, selectedJobId, selectedQuery]);
 
   function patchFilters(next: Partial<JobFilters>): void {
     setFilters((current) => ({ ...current, ...next }));
@@ -100,20 +97,14 @@ export function JobsPage(): ReactElement {
     patchFilters({ posted_from: undefined, posted_to: undefined });
   }
 
-  function toggleDetails(): void {
-    setShowDetails((current) => {
-      const next = !current;
-      rememberDetailPreference(next);
-      return next;
-    });
+  function selectJob(jobId: number): void {
+    setSelectionClosed(false);
+    setSelectedJobId(jobId);
   }
 
-  function selectJob(jobId: number): void {
-    setSelectedJobId(jobId);
-    if (!showDetails) {
-      setShowDetails(true);
-      rememberDetailPreference(true);
-    }
+  function closeSelectedJob(): void {
+    setSelectionClosed(true);
+    setSelectedJobId(null);
   }
 
   async function mark(status: "reviewing" | "applied" | "skipped" | "new", note?: string): Promise<void> {
@@ -157,7 +148,7 @@ export function JobsPage(): ReactElement {
   }
 
   return (
-    <div className={`page page-jobs ${showDetails ? "page-jobs--with-detail" : ""}`}>
+    <div className="page page-jobs">
       <section className="list-pane jobs-list-pane">
         <header className="page-header">
           <div>
@@ -179,16 +170,6 @@ export function JobsPage(): ReactElement {
                 <RotateCw size={16} aria-hidden="true" />
               )}
               Review All
-            </button>
-            <button
-              className="button"
-              type="button"
-              onClick={toggleDetails}
-              aria-pressed={!showDetails}
-              title={showDetails ? "Hide selected job" : "Show selected job"}
-            >
-              {showDetails ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
-              {showDetails ? "Hide Details" : "Show Details"}
             </button>
           </div>
         </header>
@@ -352,131 +333,132 @@ export function JobsPage(): ReactElement {
         </div>
       </section>
 
-      {showDetails ? (
+      {selectedJobId !== null ? (
         <section className="detail-pane detail-pane--drawer" aria-label="Selected job preview">
-        {selectedQuery.isFetching && !selected ? (
-          <p className="empty-state empty-state-panel">Loading job detail.</p>
-        ) : selected ? (
-          <>
-            <header className="panel-header">
-              <div>
-                <span className="eyebrow">Selected Job</span>
-                <h2>{selected.title}</h2>
+          {selectedQuery.isFetching && !selected ? (
+            <p className="empty-state empty-state-panel">Loading job detail.</p>
+          ) : selected ? (
+            <>
+              <header className="panel-header">
+                <div>
+                  <span className="eyebrow">Selected Job</span>
+                  <h2>{selected.title}</h2>
+                </div>
+                <div className="panel-header-actions">
+                  <StatusPill value={selected.status} />
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={closeSelectedJob}
+                    aria-label="Close selected job"
+                    title="Close selected job"
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
+              </header>
+              <div className="job-meta">
+                <span>{selected.workday_id || "-"}</span>
+                <span>{selected.location || "-"}</span>
+                <span>{selected.posting_date || "-"}</span>
+                <span>Applied {formatAppliedAt(selected.applied_at)}</span>
+                <span>{selected.fit_score ?? "-"} / 100</span>
+                <span>{formatEligibility(selected.eligibility_status)}</span>
+                {selected.eligibility_override ? <span>Override</span> : null}
               </div>
-              <StatusPill value={selected.status} />
-            </header>
-            <div className="job-meta">
-              <span>{selected.workday_id || "-"}</span>
-              <span>{selected.location || "-"}</span>
-              <span>{selected.posting_date || "-"}</span>
-              <span>Applied {formatAppliedAt(selected.applied_at)}</span>
-              <span>{selected.fit_score ?? "-"} / 100</span>
-              <span>{formatEligibility(selected.eligibility_status)}</span>
-              {selected.eligibility_override ? <span>Override</span> : null}
-            </div>
-            <div className="toolbar">
-              <button type="button" className="button" onClick={() => void mark("reviewing")} disabled={updateState.isLoading}>
-                <Search size={16} aria-hidden="true" />
-                Review
-              </button>
-              <button type="button" className="button" onClick={() => void mark("applied")} disabled={updateState.isLoading}>
-                <Check size={16} aria-hidden="true" />
-                Applied
-              </button>
-              {selected.status === "applied" ? (
+              <div className="toolbar">
+                <button type="button" className="button" onClick={() => void mark("reviewing")} disabled={updateState.isLoading}>
+                  <Search size={16} aria-hidden="true" />
+                  Review
+                </button>
+                <button type="button" className="button" onClick={() => void mark("applied")} disabled={updateState.isLoading}>
+                  <Check size={16} aria-hidden="true" />
+                  Applied
+                </button>
+                {selected.status === "applied" ? (
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => void mark("new", "Moved back to the Apply queue from Jobs.")}
+                    disabled={updateState.isLoading}
+                    title="Move back to Apply queue"
+                  >
+                    <Undo2 size={16} aria-hidden="true" />
+                    Unapply
+                  </button>
+                ) : null}
+                <button type="button" className="button" onClick={() => void mark("skipped")} disabled={updateState.isLoading}>
+                  <X size={16} aria-hidden="true" />
+                  Skip
+                </button>
                 <button
                   type="button"
                   className="button"
-                  onClick={() => void mark("new", "Moved back to the Apply queue from Jobs.")}
-                  disabled={updateState.isLoading}
-                  title="Move back to Apply queue"
+                  onClick={() => void startTailorResume()}
+                  disabled={tailorResumeState.isLoading || resumeRunActive || !selected.recommended_resume_name}
+                  title="Create a tailored resume copy from the extracted source"
                 >
-                  <Undo2 size={16} aria-hidden="true" />
-                  Unapply
+                  {tailorResumeState.isLoading || resumeRunActive ? (
+                    <Loader2 className="spin" size={16} aria-hidden="true" />
+                  ) : (
+                    <FilePenLine size={16} aria-hidden="true" />
+                  )}
+                  Tailor Resume
                 </button>
-              ) : null}
-              <button type="button" className="button" onClick={() => void mark("skipped")} disabled={updateState.isLoading}>
-                <X size={16} aria-hidden="true" />
-                Skip
-              </button>
-              <button
-                type="button"
-                className="button"
-                onClick={() => void startTailorResume()}
-                disabled={tailorResumeState.isLoading || resumeRunActive || !selected.recommended_resume_name}
-                title="Create a tailored resume copy from the extracted source"
-              >
-                {tailorResumeState.isLoading || resumeRunActive ? (
-                  <Loader2 className="spin" size={16} aria-hidden="true" />
-                ) : (
-                  <FilePenLine size={16} aria-hidden="true" />
-                )}
-                Tailor Resume
-              </button>
-              <button
-                type="button"
-                className="button"
-                onClick={() => void startSelectedEligibilityReview()}
-                disabled={reviewJobState.isLoading || eligibilityRunActive}
-                title="Re-review eligibility for selected job"
-              >
-                {reviewJobState.isLoading || eligibilityRunActive ? (
-                  <Loader2 className="spin" size={16} aria-hidden="true" />
-                ) : (
-                  <RotateCw size={16} aria-hidden="true" />
-                )}
-                Eligibility
-              </button>
-              {selected.eligibility_status === "ineligible" || selected.eligibility_override ? (
                 <button
                   type="button"
                   className="button"
-                  onClick={() => void toggleEligibilityOverride()}
-                  disabled={overrideState.isLoading}
-                  title={selected.eligibility_override ? "Clear eligibility override" : "Allow apply despite eligibility review"}
+                  onClick={() => void startSelectedEligibilityReview()}
+                  disabled={reviewJobState.isLoading || eligibilityRunActive}
+                  title="Re-review eligibility for selected job"
                 >
-                  {selected.eligibility_override ? <Lock size={16} aria-hidden="true" /> : <Unlock size={16} aria-hidden="true" />}
-                  {selected.eligibility_override ? "Block" : "Allow"}
+                  {reviewJobState.isLoading || eligibilityRunActive ? (
+                    <Loader2 className="spin" size={16} aria-hidden="true" />
+                  ) : (
+                    <RotateCw size={16} aria-hidden="true" />
+                  )}
+                  Eligibility
                 </button>
-              ) : null}
-              {selected.url ? (
-                <a className="button" href={selected.url} target="_blank" rel="noreferrer">
-                  <ExternalLink size={16} aria-hidden="true" />
-                  Open
-                </a>
-              ) : null}
-              <button
-                type="button"
-                className="button"
-                onClick={toggleDetails}
-                aria-pressed={!showDetails}
-                title="Hide selected job"
-              >
-                <EyeOff size={16} aria-hidden="true" />
-                Hide Details
-              </button>
-            </div>
-            <dl className="detail-list">
-              <dt>Department</dt>
-              <dd>{selected.department || "-"}</dd>
-              <dt>Hours</dt>
-              <dd>{selected.hours || "-"}</dd>
-              <dt>Pay</dt>
-              <dd>{selected.pay_rate || "-"}</dd>
-              <dt>Applied</dt>
-              <dd>{formatAppliedAt(selected.applied_at)}</dd>
-              <dt>Resume</dt>
-              <dd>{selected.recommended_resume_path || "-"}</dd>
-              <dt>Notes</dt>
-              <dd>{selected.application_notes || "-"}</dd>
-            </dl>
-            <EligibilityPanel eligibility={selected.eligibility} override={selected.eligibility_override} />
-            <h3>Description</h3>
-            <pre className="description-box">{selected.raw_description || "No description stored."}</pre>
-          </>
-        ) : (
-          <p className="empty-state empty-state-panel">Select a job.</p>
-        )}
+                {selected.eligibility_status === "ineligible" || selected.eligibility_override ? (
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => void toggleEligibilityOverride()}
+                    disabled={overrideState.isLoading}
+                    title={selected.eligibility_override ? "Clear eligibility override" : "Allow apply despite eligibility review"}
+                  >
+                    {selected.eligibility_override ? <Lock size={16} aria-hidden="true" /> : <Unlock size={16} aria-hidden="true" />}
+                    {selected.eligibility_override ? "Block" : "Allow"}
+                  </button>
+                ) : null}
+                {selected.url ? (
+                  <a className="button" href={selected.url} target="_blank" rel="noreferrer">
+                    <ExternalLink size={16} aria-hidden="true" />
+                    Open
+                  </a>
+                ) : null}
+              </div>
+              <dl className="detail-list">
+                <dt>Department</dt>
+                <dd>{selected.department || "-"}</dd>
+                <dt>Hours</dt>
+                <dd>{selected.hours || "-"}</dd>
+                <dt>Pay</dt>
+                <dd>{selected.pay_rate || "-"}</dd>
+                <dt>Applied</dt>
+                <dd>{formatAppliedAt(selected.applied_at)}</dd>
+                <dt>Resume</dt>
+                <dd>{selected.recommended_resume_path || "-"}</dd>
+                <dt>Notes</dt>
+                <dd>{selected.application_notes || "-"}</dd>
+              </dl>
+              <EligibilityPanel eligibility={selected.eligibility} override={selected.eligibility_override} />
+              <h3>Description</h3>
+              <pre className="description-box">{selected.raw_description || "No description stored."}</pre>
+            </>
+          ) : (
+            <p className="empty-state empty-state-panel">Select a job.</p>
+          )}
         </section>
       ) : null}
       {eligibilityRunId ? (
@@ -491,19 +473,6 @@ export function JobsPage(): ReactElement {
       ) : null}
     </div>
   );
-}
-
-function loadDetailPreference(): boolean {
-  if (typeof window === "undefined") {
-    return true;
-  }
-  return window.localStorage.getItem(JOB_DETAIL_STORAGE_KEY) !== "false";
-}
-
-function rememberDetailPreference(showDetails: boolean): void {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(JOB_DETAIL_STORAGE_KEY, String(showDetails));
-  }
 }
 
 interface EligibilityPanelProps {

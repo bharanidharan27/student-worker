@@ -35,6 +35,17 @@ export interface SessionStatus {
   exists: boolean;
   size_bytes: number;
   modified_at: string | null;
+  display_name: string | null;
+  email: string | null;
+}
+
+export interface StartLoginCaptureRequest {
+  url?: string | null;
+  auth_state_path?: string | null;
+  browser?: "chromium" | "firefox" | "webkit";
+  slow_mo_ms?: number;
+  display_name?: string | null;
+  email?: string | null;
 }
 
 export interface SessionCheck extends SessionStatus {

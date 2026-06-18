@@ -9,9 +9,10 @@ import { StatusPill } from "./StatusPill";
 interface RunPanelProps {
   runId: number | null;
   title?: string;
+  compact?: boolean;
 }
 
-export function RunPanel({ runId, title = "Current run" }: RunPanelProps): ReactElement {
+export function RunPanel({ runId, title = "Current run", compact = false }: RunPanelProps): ReactElement {
   const runQuery = useGetRunQuery(runId ?? skipToken, {
     pollingInterval: runId ? 2_000 : 0
   });
@@ -34,7 +35,7 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
 
   if (!runId) {
     return (
-      <section className="panel">
+      <section className={`panel${compact ? " panel--compact" : ""}`}>
         <header className="panel-header">
           <h2>{title}</h2>
         </header>
@@ -44,7 +45,7 @@ export function RunPanel({ runId, title = "Current run" }: RunPanelProps): React
   }
 
   return (
-    <section className="panel">
+    <section className={`panel${compact ? " panel--compact" : ""}`}>
       <header className="panel-header">
         <h2>{title}</h2>
         <div className="header-actions">
