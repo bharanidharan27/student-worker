@@ -8,7 +8,8 @@ import type {
   JobFilters,
   ScrapeRequest,
   SessionCheck,
-  SessionStatus
+  SessionStatus,
+  StartLoginCaptureRequest
 } from "../types";
 
 interface RunListResponse {
@@ -46,8 +47,12 @@ export const consoleApi = createApi({
       query: () => ({ url: "/session/check", method: "POST" }),
       invalidatesTags: ["Session"]
     }),
-    startLoginCapture: builder.mutation<AutomationRun, void>({
-      query: () => ({ url: "/session/capture/start", method: "POST", body: {} }),
+    startLoginCapture: builder.mutation<AutomationRun, StartLoginCaptureRequest | void>({
+      query: (body) => ({
+        url: "/session/capture/start",
+        method: "POST",
+        body: body ?? {}
+      }),
       invalidatesTags: ["Run", "Session"]
     }),
     listRuns: builder.query<RunListResponse, number | void>({

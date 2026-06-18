@@ -30,6 +30,8 @@ class SessionStatusResponse(BaseModel):
     exists: bool
     size_bytes: int = 0
     modified_at: str | None = None
+    display_name: str | None = None
+    email: str | None = None
 
 
 class SessionCheckResponse(SessionStatusResponse):
@@ -42,6 +44,8 @@ class StartLoginCaptureRequest(BaseModel):
     auth_state_path: str | None = None
     browser: Literal["chromium", "firefox", "webkit"] = "chromium"
     slow_mo_ms: int = Field(default=0, ge=0, le=5_000)
+    display_name: str | None = None
+    email: str | None = None
 
 
 class ScrapeRequest(BaseModel):

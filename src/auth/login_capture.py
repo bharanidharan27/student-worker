@@ -3,17 +3,60 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+from src.auth.auth_meta import AuthMeta, write_auth_meta
 
 
 DEFAULT_WORKDAY_URL = "https://www.myworkday.com/asu/d/task/1422$3898.htmld"
 DEFAULT_AUTH_STATE_PATH = Path("playwright/.auth/asu_workday.json")
 
+PROFILE_NAME_SELECTORS = [
+    "[data-automation-id='userName']",
+    "[data-automation-id='topBarUserName']",
+    "[data-automation-id='userMenu']",
+    "[data-automation-id='headerUserName']",
+    "header [data-automation-id*='user' i]",
+    "header [aria-label*='user' i]",
+    "[data-testid='userName']",
+    "[data-testid='user-name']",
+    ".WDNF[data-automation-id='userName']",
+    "[data-automation-id='meMenu']",
+    "[data-automation-id='meMenuTrigger']",
+]
+
+PROFILE_EMAIL_SELECTORS = [
+    "[data-automation-id='userEmail']",
+    "[data-automation-id='meMenuEmail']",
+    "[data-automation-id='userMenuEmail']",
+]
+
 
 def ensure_auth_state_parent(auth_state_path: Path = DEFAULT_AUTH_STATE_PATH) -> Path:
     auth_state_path.parent.mkdir(parents=True, exist_ok=True)
     return auth_state_path
+
+
+def _read_text(page, selectors: list[str]) -> str | None:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() == 0:
+                continue
+            text = locator.inner_text(timeout=1_000).strip()
+        except Exception:
+            continue
+        if text:
+            return text
+    return None
+
+
+def _scrape_profile(page) -> tuple[str | None, str | None]:
+    display_name = _read_text(page, PROFILE_NAME_SELECTORS)
+    email = _read_text(page, PROFILE_EMAIL_SELECTORS)
+    return display_name, email
 
 
 def capture_login_state(
@@ -22,6 +65,8 @@ def capture_login_state(
     browser_name: str = "chromium",
     slow_mo_ms: int = 0,
     wait_for_user: Callable[[str], None] | None = None,
+    display_name: str | None = None,
+    email: str | None = None,
 ) -> Path:
     """Open Workday for manual SSO/MFA, then save Playwright storage state."""
 
@@ -52,7 +97,19 @@ def capture_login_state(
             wait_for_user(prompt)
 
         context.storage_state(path=str(auth_state_path))
+        scraped_name, scraped_email = _scrape_profile(page)
         browser.close()
+
+    resolved_name = display_name or scraped_name
+    resolved_email = email or scraped_email
+    write_auth_meta(
+        auth_state_path,
+        AuthMeta(
+            display_name=resolved_name,
+            email=resolved_email,
+            captured_at=datetime.now().isoformat(timespec="seconds"),
+        ),
+    )
 
     return auth_state_path
 
