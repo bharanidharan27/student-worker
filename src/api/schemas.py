@@ -28,6 +28,7 @@ class HealthResponse(BaseModel):
 class SessionStatusResponse(BaseModel):
     auth_state_path: str
     exists: bool
+    authenticated: bool = False
     size_bytes: int = 0
     modified_at: str | None = None
     display_name: str | None = None

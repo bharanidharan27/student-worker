@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.auth.login_capture import ensure_auth_state_parent
+from src.auth.login_capture import _profile_email_from_text, _profile_name_from_text, ensure_auth_state_parent
 from src.auth.session_check import auth_state_exists, evaluate_session_page
 
 
@@ -38,3 +38,20 @@ def test_evaluate_session_page_accepts_workday_jobs_page() -> None:
         "Workday Student Jobs Search Results",
     ) is True
 
+
+def test_profile_parser_extracts_name_from_workday_account_panel() -> None:
+    panel_text = """
+    Bharanidharan Maheswaran
+    My Account
+    Sitemap
+    Favorites
+    My Reports
+    Documentation
+    Sign Out
+    """
+
+    assert _profile_name_from_text(panel_text) == "Bharanidharan Maheswaran"
+
+
+def test_profile_parser_extracts_email() -> None:
+    assert _profile_email_from_text("Bharanidharan Maheswaran bharani@example.edu") == "bharani@example.edu"

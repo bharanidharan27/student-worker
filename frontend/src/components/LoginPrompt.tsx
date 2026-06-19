@@ -19,6 +19,8 @@ export function LoginPrompt({ open, onDismiss }: LoginPromptProps): ReactElement
   const statusQuery = useGetSessionStatusQuery(undefined, { pollingInterval: 5_000 });
   const [checkSession, checkState] = useCheckSessionMutation();
   const [startLoginCapture, captureState] = useStartLoginCaptureMutation();
+  const signedIn = Boolean(statusQuery.data?.authenticated);
+  const profileLabel = statusQuery.data?.display_name?.trim() || statusQuery.data?.email?.trim() || "your Workday account";
 
   if (!open) {
     return null;
@@ -47,10 +49,11 @@ export function LoginPrompt({ open, onDismiss }: LoginPromptProps): ReactElement
           </div>
           <div>
             <span className="eyebrow">Workday sign in</span>
-            <h2 id="login-prompt-title">Sign in to apply to jobs</h2>
+            <h2 id="login-prompt-title">{signedIn ? "Refresh Workday session" : "Sign in to apply to jobs"}</h2>
             <p className="login-prompt-subtitle">
-              Sign in once to enable scraping and applications. You can keep browsing saved jobs without
-              signing in.
+              {signedIn
+                ? `Signed in as ${profileLabel}. Refresh the session if Workday asks you to sign in again.`
+                : "Sign in once to enable scraping and applications. You can keep browsing saved jobs without signing in."}
             </p>
           </div>
         </header>
@@ -83,24 +86,24 @@ export function LoginPrompt({ open, onDismiss }: LoginPromptProps): ReactElement
             type="button"
             onClick={() => void checkSession()}
             disabled={checkState.isLoading}
-            title="Verify saved session"
+            title="Verify saved session and sync profile"
           >
             <ShieldCheck size={16} aria-hidden="true" />
-            Check
+            Check session
           </button>
           <button
             className="button button-primary"
             type="button"
             onClick={() => void handleCapture()}
             disabled={captureState.isLoading}
-            title="Open browser to sign in"
+            title={signedIn ? "Refresh Workday session" : "Open browser to sign in"}
           >
             {captureState.isLoading ? (
               <Loader2 className="spin" size={16} aria-hidden="true" />
             ) : (
               <KeyRound size={16} aria-hidden="true" />
             )}
-            Sign in with Workday
+            {signedIn ? "Refresh Workday session" : "Sign in with Workday"}
           </button>
           <button
             className="button button-ghost"

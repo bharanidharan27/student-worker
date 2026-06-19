@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.services import AutomationService
+from src.auth.auth_meta import AuthMeta, write_auth_meta
 from src.resume_tailoring import TailoredResumeResult
 from src.storage.db import (
     create_automation_run,
@@ -93,6 +94,54 @@ def test_api_health_and_jobs_list(tmp_path: Path) -> None:
     assert [job["workday_id"] for job in posted_jobs.json()["jobs"][:2]] == ["JR-api", "JR-old"]
     assert [job["workday_id"] for job in eligible_jobs.json()["jobs"]] == ["JR-api"]
     assert jobs.json()["jobs"][0]["eligibility"]["summary"] == "Looks good."
+
+
+def test_session_status_distinguishes_saved_file_from_authenticated_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    with TestClient(app) as client:
+        saved_file_status = client.get("/api/session/status", params={"auth_state_path": str(auth_path)})
+        write_auth_meta(auth_path, AuthMeta(display_name="Bharanidharan Maheswaran", email="bharani@example.edu"))
+        authenticated_status = client.get("/api/session/status", params={"auth_state_path": str(auth_path)})
+
+    assert saved_file_status.status_code == 200
+    assert saved_file_status.json()["exists"] is True
+    assert saved_file_status.json()["authenticated"] is False
+    assert saved_file_status.json()["display_name"] is None
+    assert authenticated_status.status_code == 200
+    assert authenticated_status.json()["authenticated"] is True
+    assert authenticated_status.json()["display_name"] == "Bharanidharan Maheswaran"
+
+
+def test_session_check_refreshes_profile_metadata(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs.sqlite"
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+    service = AutomationService(db_path)
+    app = create_app(db_path=db_path, automation_service=service)
+
+    monkeypatch.setattr("src.api.app.check_session", lambda **_kwargs: True)
+
+    def fake_refresh(**kwargs):
+        write_auth_meta(
+            Path(kwargs["auth_state_path"]),
+            AuthMeta(display_name="Bharanidharan Maheswaran", email="bharani@example.edu"),
+        )
+        return AuthMeta(display_name="Bharanidharan Maheswaran", email="bharani@example.edu")
+
+    monkeypatch.setattr("src.api.app.refresh_auth_meta_from_saved_session", fake_refresh)
+
+    with TestClient(app) as client:
+        response = client.post("/api/session/check", params={"auth_state_path": str(auth_path)})
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    assert response.json()["authenticated"] is True
+    assert response.json()["display_name"] == "Bharanidharan Maheswaran"
 
 
 def test_extracted_sort_appends_prior_scrape_order_after_partial_run(tmp_path: Path) -> None:

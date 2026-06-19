@@ -33,6 +33,7 @@ export interface AutomationRunLog {
 export interface SessionStatus {
   auth_state_path: string;
   exists: boolean;
+  authenticated: boolean;
   size_bytes: number;
   modified_at: string | null;
   display_name: string | null;
