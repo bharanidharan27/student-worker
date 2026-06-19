@@ -37,6 +37,7 @@ vi.mock("../services/api", () => ({
     data: {
       auth_state_path: "playwright/.auth/asu_workday.json",
       exists: false,
+      authenticated: false,
       size_bytes: 0,
       modified_at: null,
       display_name: null,

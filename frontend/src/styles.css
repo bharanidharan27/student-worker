@@ -506,13 +506,17 @@ a {
 
 .detail-pane--drawer {
   position: fixed;
-  top: 24px;
-  right: 24px;
-  bottom: 24px;
+  top: 0;
+  right: 0;
+  bottom: 0;
   z-index: 5;
   align-content: start;
   width: min(820px, calc(100vw - 360px));
   max-width: calc(100vw - 48px);
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
   overflow: auto;
   box-shadow: 0 24px 60px rgba(32, 33, 36, 0.18);
 }

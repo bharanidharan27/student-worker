@@ -21,7 +21,7 @@ export function Shell(): ReactElement {
   const [promptDismissed, setPromptDismissed] = useState<boolean>(false);
   const [lastSignedIn, setLastSignedIn] = useState<boolean | null>(null);
   const statusQuery = useGetSessionStatusQuery(undefined, { pollingInterval: 5_000 });
-  const signedIn = Boolean(statusQuery.data?.exists);
+  const signedIn = Boolean(statusQuery.data?.authenticated);
 
   useEffect(() => {
     if (lastSignedIn === null) {
@@ -80,7 +80,7 @@ export function Shell(): ReactElement {
 
   const displayName = statusQuery.data?.display_name?.trim() || "";
   const email = statusQuery.data?.email?.trim() || "";
-  const signedInLabel = displayName || email || "Workday session";
+  const signedInLabel = displayName || email;
 
   return (
     <div className={`shell ${sidebarCollapsed ? "shell--sidebar-collapsed" : ""}`}>
@@ -155,10 +155,10 @@ export function Shell(): ReactElement {
               className="button button-primary"
               type="button"
               onClick={openPrompt}
-              title={signedIn ? "Update Workday sign in" : "Sign in with Workday"}
+              title={signedIn ? "Refresh Workday session" : "Sign in with Workday"}
             >
               {signedIn ? <KeyRound size={16} aria-hidden="true" /> : <LogIn size={16} aria-hidden="true" />}
-              {signedIn ? "Update sign in" : "Sign in"}
+              {signedIn ? "Refresh session" : "Sign in"}
             </button>
           </div>
         </header>

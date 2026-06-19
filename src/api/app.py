@@ -42,7 +42,12 @@ from src.apply_automation import (
     _run_playwright_apply,
 )
 from src.auth.auth_meta import read_auth_meta
-from src.auth.login_capture import DEFAULT_AUTH_STATE_PATH, DEFAULT_WORKDAY_URL, capture_login_state
+from src.auth.login_capture import (
+    DEFAULT_AUTH_STATE_PATH,
+    DEFAULT_WORKDAY_URL,
+    capture_login_state,
+    refresh_auth_meta_from_saved_session,
+)
 from src.auth.session_check import auth_state_exists, check_session
 from src.eligibility.assessor import review_db_eligibility, review_stored_job_eligibility
 from src.resume_tailoring import DEFAULT_TAILORED_RESUME_DIR, tailor_resume_for_job
@@ -134,6 +139,15 @@ def create_app(
             )
         except RuntimeError as exc:
             return SessionCheckResponse(**status.model_dump(), valid=False, message=str(exc))
+        if valid:
+            try:
+                refresh_auth_meta_from_saved_session(
+                    workday_url=url or DEFAULT_WORKDAY_URL,
+                    auth_state_path=auth_path,
+                    headless=True,
+                )
+            except RuntimeError as exc:
+                return SessionCheckResponse(**_session_status_response(auth_path).model_dump(), valid=True, message=str(exc))
         message = (
             "Saved Workday session looks valid."
             if valid
@@ -437,14 +451,24 @@ def _session_status_response(auth_state_path: Path) -> SessionStatusResponse:
         else None
     )
     meta = read_auth_meta(auth_state_path) if exists else None
+    display_name = _clean_optional_text(meta.display_name if meta else None)
+    email = _clean_optional_text(meta.email if meta else None)
     return SessionStatusResponse(
         auth_state_path=str(auth_state_path),
         exists=exists,
+        authenticated=exists and bool(display_name or email),
         size_bytes=size_bytes,
         modified_at=modified_at,
-        display_name=meta.display_name if meta else None,
-        email=meta.email if meta else None,
+        display_name=display_name,
+        email=email,
     )
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 
 def _run_or_404(run_id: int, db_path: Path) -> AutomationRunResponse:
