@@ -13,6 +13,15 @@ const apiMocks = vi.hoisted(() => ({
   getRunEventsRefetch: vi.fn(),
   getRunRefetch: vi.fn(),
   refetchQueue: vi.fn(),
+  sessionStatus: {
+    auth_state_path: "playwright/.auth/asu_workday.json",
+    exists: false,
+    authenticated: false,
+    size_bytes: 0,
+    modified_at: null as string | null,
+    display_name: null as string | null,
+    email: null as string | null
+  },
   startLoginCapture: vi.fn(),
   stopRun: vi.fn(),
   updateJobStatus: vi.fn()
@@ -34,15 +43,8 @@ vi.mock("../services/api", () => ({
     refetch: apiMocks.getRunRefetch
   }),
   useGetSessionStatusQuery: () => ({
-    data: {
-      auth_state_path: "playwright/.auth/asu_workday.json",
-      exists: false,
-      authenticated: false,
-      size_bytes: 0,
-      modified_at: null,
-      display_name: null,
-      email: null
-    }
+    data: apiMocks.sessionStatus,
+    isLoading: false
   }),
   useListJobsQuery: () => ({
     data: {
@@ -122,8 +124,18 @@ function queuedRun(kind: "apply_job" | "apply_queue") {
 
 describe("ApplyPage auth prompts", () => {
   beforeEach(() => {
+    apiMocks.sessionStatus = {
+      auth_state_path: "playwright/.auth/asu_workday.json",
+      exists: false,
+      authenticated: false,
+      size_bytes: 0,
+      modified_at: null as string | null,
+      display_name: null as string | null,
+      email: null as string | null
+    };
     apiMocks.applyJob.mockReturnValue({ unwrap: () => Promise.resolve(queuedRun("apply_job")) });
     apiMocks.applyQueue.mockReturnValue({ unwrap: () => Promise.resolve(queuedRun("apply_queue")) });
+    apiMocks.checkSession.mockReturnValue({ unwrap: () => Promise.resolve({ valid: false }) });
     apiMocks.updateJobStatus.mockReturnValue({ unwrap: () => Promise.resolve({}) });
   });
 
@@ -134,6 +146,7 @@ describe("ApplyPage auth prompts", () => {
 
   it("reopens the login prompt instead of applying a job when signed out", async () => {
     renderApplyRoute();
+    expect(screen.queryByRole("button", { name: /check session/i })).not.toBeInTheDocument();
     await dismissInitialLoginPrompt();
 
     fireEvent.click(await screen.findByRole("button", { name: /apply job: office aide/i }));
@@ -150,5 +163,45 @@ describe("ApplyPage auth prompts", () => {
 
     expect(await screen.findByRole("dialog", { name: /sign in to apply to jobs/i })).toBeInTheDocument();
     expect(apiMocks.applyQueue).not.toHaveBeenCalled();
+  });
+
+  it("checks a saved auth file implicitly and shows a loading state", async () => {
+    apiMocks.sessionStatus = {
+      auth_state_path: "playwright/.auth/asu_workday.json",
+      exists: true,
+      authenticated: false,
+      size_bytes: 100,
+      modified_at: "2026-06-20T12:00:00",
+      display_name: null,
+      email: null
+    };
+    apiMocks.checkSession.mockReturnValue({ unwrap: () => new Promise(() => undefined) });
+
+    renderApplyRoute();
+
+    expect(await screen.findAllByText(/checking session/i)).not.toHaveLength(0);
+    for (const loadingButton of screen.getAllByRole("button", { name: /loading/i })) {
+      expect(loadingButton).toBeDisabled();
+    }
+    expect(screen.queryByRole("button", { name: /check session/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.checkSession).toHaveBeenCalledTimes(1));
+  });
+
+  it("opens the refresh session prompt when already signed in", async () => {
+    apiMocks.sessionStatus = {
+      auth_state_path: "playwright/.auth/asu_workday.json",
+      exists: true,
+      authenticated: true,
+      size_bytes: 100,
+      modified_at: "2026-06-20T12:00:00",
+      display_name: "Bharanidharan Maheswaran",
+      email: null
+    };
+
+    renderApplyRoute();
+    fireEvent.click(await screen.findByRole("button", { name: /refresh session/i }));
+
+    expect(await screen.findByRole("dialog", { name: /refresh workday session/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /check session/i })).not.toBeInTheDocument();
   });
 });

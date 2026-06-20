@@ -598,6 +598,11 @@ tr:focus-visible {
   color: #9a2e2e;
 }
 
+.notice-info {
+  background: #e7f1ee;
+  color: #0d5a50;
+}
+
 .notice-warn {
   background: #fff1c7;
   color: #805700;
