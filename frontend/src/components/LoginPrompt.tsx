@@ -1,23 +1,22 @@
-import { KeyRound, Loader2, ShieldCheck, X } from "lucide-react";
+import { KeyRound, Loader2, X } from "lucide-react";
 import type { ReactElement } from "react";
 import { useState } from "react";
 
 import {
-  useCheckSessionMutation,
   useGetSessionStatusQuery,
   useStartLoginCaptureMutation
 } from "../services/api";
 import { RunPanel } from "./RunPanel";
 
 interface LoginPromptProps {
+  checkingSession: boolean;
   open: boolean;
   onDismiss: () => void;
 }
 
-export function LoginPrompt({ open, onDismiss }: LoginPromptProps): ReactElement | null {
+export function LoginPrompt({ checkingSession, open, onDismiss }: LoginPromptProps): ReactElement | null {
   const [runId, setRunId] = useState<number | null>(null);
   const statusQuery = useGetSessionStatusQuery(undefined, { pollingInterval: 5_000 });
-  const [checkSession, checkState] = useCheckSessionMutation();
   const [startLoginCapture, captureState] = useStartLoginCaptureMutation();
   const signedIn = Boolean(statusQuery.data?.authenticated);
   const profileLabel = statusQuery.data?.display_name?.trim() || statusQuery.data?.email?.trim() || "your Workday account";
@@ -73,37 +72,27 @@ export function LoginPrompt({ open, onDismiss }: LoginPromptProps): ReactElement
           </div>
         </section>
 
-        {checkState.data ? (
-          <p className={`notice ${checkState.data.valid ? "notice-success" : "notice-error"}`}>
-            <ShieldCheck size={16} aria-hidden="true" />
-            {checkState.data.message}
+        {checkingSession ? (
+          <p className="notice notice-info">
+            <Loader2 className="spin" size={16} aria-hidden="true" />
+            Checking session
           </p>
         ) : null}
 
         <div className="login-prompt-actions">
           <button
-            className="button"
-            type="button"
-            onClick={() => void checkSession()}
-            disabled={checkState.isLoading}
-            title="Verify saved session and sync profile"
-          >
-            <ShieldCheck size={16} aria-hidden="true" />
-            Check session
-          </button>
-          <button
             className="button button-primary"
             type="button"
             onClick={() => void handleCapture()}
-            disabled={captureState.isLoading}
-            title={signedIn ? "Refresh Workday session" : "Open browser to sign in"}
+            disabled={captureState.isLoading || checkingSession}
+            title={checkingSession ? "Checking Workday session" : signedIn ? "Refresh Workday session" : "Open browser to sign in"}
           >
-            {captureState.isLoading ? (
+            {captureState.isLoading || checkingSession ? (
               <Loader2 className="spin" size={16} aria-hidden="true" />
             ) : (
               <KeyRound size={16} aria-hidden="true" />
             )}
-            {signedIn ? "Refresh Workday session" : "Sign in with Workday"}
+            {checkingSession ? "Loading" : signedIn ? "Refresh Workday session" : "Sign in with Workday"}
           </button>
           <button
             className="button button-ghost"
