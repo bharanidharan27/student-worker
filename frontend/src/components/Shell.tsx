@@ -21,8 +21,8 @@ import { LoginPrompt } from "./LoginPrompt";
 import { useCheckSessionMutation, useGetSessionStatusQuery } from "../services/api";
 
 const navigation = [
-  { to: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { to: "/scraper", label: "Scraper", icon: Radar },
+  { to: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { to: "/apply", label: "Apply", icon: ClipboardList },
   { to: "/runs", label: "Runs", icon: History }
 ];

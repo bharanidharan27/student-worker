@@ -44,7 +44,6 @@ const sortOptions: Array<{ label: string; value: JobSort }> = [
 export function JobsPage(): ReactElement {
   const [filters, setFilters] = useState<JobFilters>({ limit: 100, sort: "best_fit" });
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [selectionClosed, setSelectionClosed] = useState(false);
   const [eligibilityRunId, setEligibilityRunId] = useState<number | null>(null);
   const [resumeRunId, setResumeRunId] = useState<number | null>(null);
   const jobsQuery = useListJobsQuery(filters, { pollingInterval: 5_000 });
@@ -67,17 +66,10 @@ export function JobsPage(): ReactElement {
   const resumeRunActive = isActiveRunStatus(resumeRunQuery.data?.status);
 
   useEffect(() => {
-    if (jobs.length === 0 && selectedJobId !== null) {
+    if (selectedJobId !== null && !jobs.some((job) => job.id === selectedJobId)) {
       setSelectedJobId(null);
-      return;
     }
-    if (selectedJobId === null && jobs.length > 0 && !selectionClosed) {
-      setSelectedJobId(jobs[0].id);
-    }
-    if (selectedJobId !== null && jobs.length > 0 && !jobs.some((job) => job.id === selectedJobId)) {
-      setSelectedJobId(jobs[0].id);
-    }
-  }, [jobs, selectedJobId, selectionClosed]);
+  }, [jobs, selectedJobId]);
 
   useEffect(() => {
     if (!eligibilityRunQuery.data || isActiveRunStatus(eligibilityRunQuery.data.status)) {
@@ -98,12 +90,10 @@ export function JobsPage(): ReactElement {
   }
 
   function selectJob(jobId: number): void {
-    setSelectionClosed(false);
     setSelectedJobId(jobId);
   }
 
   function closeSelectedJob(): void {
-    setSelectionClosed(true);
     setSelectedJobId(null);
   }
 
