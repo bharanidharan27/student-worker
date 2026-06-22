@@ -329,104 +329,106 @@ export function JobsPage(): ReactElement {
             <p className="empty-state empty-state-panel">Loading job detail.</p>
           ) : selected ? (
             <>
-              <header className="panel-header">
-                <div>
-                  <span className="eyebrow">Selected Job</span>
-                  <h2>{selected.title}</h2>
+              <div className="selected-job-sticky" aria-label="Selected job controls">
+                <header className="panel-header">
+                  <div>
+                    <span className="eyebrow">Selected Job</span>
+                    <h2>{selected.title}</h2>
+                  </div>
+                  <div className="panel-header-actions">
+                    <StatusPill value={selected.status} />
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={closeSelectedJob}
+                      aria-label="Close selected job"
+                      title="Close selected job"
+                    >
+                      <X size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                </header>
+                <div className="job-meta">
+                  <span>{selected.workday_id || "-"}</span>
+                  <span>{selected.location || "-"}</span>
+                  <span>{selected.posting_date || "-"}</span>
+                  <span>Applied {formatAppliedAt(selected.applied_at)}</span>
+                  <span>{selected.fit_score ?? "-"} / 100</span>
+                  <span>{formatEligibility(selected.eligibility_status)}</span>
+                  {selected.eligibility_override ? <span>Override</span> : null}
                 </div>
-                <div className="panel-header-actions">
-                  <StatusPill value={selected.status} />
-                  <button
-                    type="button"
-                    className="icon-button"
-                    onClick={closeSelectedJob}
-                    aria-label="Close selected job"
-                    title="Close selected job"
-                  >
+                <div className="toolbar">
+                  <button type="button" className="button" onClick={() => void mark("reviewing")} disabled={updateState.isLoading}>
+                    <Search size={16} aria-hidden="true" />
+                    Review
+                  </button>
+                  <button type="button" className="button" onClick={() => void mark("applied")} disabled={updateState.isLoading}>
+                    <Check size={16} aria-hidden="true" />
+                    Applied
+                  </button>
+                  {selected.status === "applied" ? (
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => void mark("new", "Moved back to the Apply queue from Jobs.")}
+                      disabled={updateState.isLoading}
+                      title="Move back to Apply queue"
+                    >
+                      <Undo2 size={16} aria-hidden="true" />
+                      Unapply
+                    </button>
+                  ) : null}
+                  <button type="button" className="button" onClick={() => void mark("skipped")} disabled={updateState.isLoading}>
                     <X size={16} aria-hidden="true" />
+                    Skip
                   </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => void startTailorResume()}
+                    disabled={tailorResumeState.isLoading || resumeRunActive || !selected.recommended_resume_name}
+                    title="Create a tailored resume copy from the extracted source"
+                  >
+                    {tailorResumeState.isLoading || resumeRunActive ? (
+                      <Loader2 className="spin" size={16} aria-hidden="true" />
+                    ) : (
+                      <FilePenLine size={16} aria-hidden="true" />
+                    )}
+                    Tailor Resume
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => void startSelectedEligibilityReview()}
+                    disabled={reviewJobState.isLoading || eligibilityRunActive}
+                    title="Re-review eligibility for selected job"
+                  >
+                    {reviewJobState.isLoading || eligibilityRunActive ? (
+                      <Loader2 className="spin" size={16} aria-hidden="true" />
+                    ) : (
+                      <RotateCw size={16} aria-hidden="true" />
+                    )}
+                    Eligibility
+                  </button>
+                  {selected.eligibility_status === "ineligible" || selected.eligibility_override ? (
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => void toggleEligibilityOverride()}
+                      disabled={overrideState.isLoading}
+                      title={selected.eligibility_override ? "Clear eligibility override" : "Allow apply despite eligibility review"}
+                    >
+                      {selected.eligibility_override ? <Lock size={16} aria-hidden="true" /> : <Unlock size={16} aria-hidden="true" />}
+                      {selected.eligibility_override ? "Block" : "Allow"}
+                    </button>
+                  ) : null}
+                  {selected.url ? (
+                    <a className="button" href={selected.url} target="_blank" rel="noreferrer">
+                      <ExternalLink size={16} aria-hidden="true" />
+                      Open
+                    </a>
+                  ) : null}
                 </div>
-              </header>
-              <div className="job-meta">
-                <span>{selected.workday_id || "-"}</span>
-                <span>{selected.location || "-"}</span>
-                <span>{selected.posting_date || "-"}</span>
-                <span>Applied {formatAppliedAt(selected.applied_at)}</span>
-                <span>{selected.fit_score ?? "-"} / 100</span>
-                <span>{formatEligibility(selected.eligibility_status)}</span>
-                {selected.eligibility_override ? <span>Override</span> : null}
-              </div>
-              <div className="toolbar">
-                <button type="button" className="button" onClick={() => void mark("reviewing")} disabled={updateState.isLoading}>
-                  <Search size={16} aria-hidden="true" />
-                  Review
-                </button>
-                <button type="button" className="button" onClick={() => void mark("applied")} disabled={updateState.isLoading}>
-                  <Check size={16} aria-hidden="true" />
-                  Applied
-                </button>
-                {selected.status === "applied" ? (
-                  <button
-                    type="button"
-                    className="button"
-                    onClick={() => void mark("new", "Moved back to the Apply queue from Jobs.")}
-                    disabled={updateState.isLoading}
-                    title="Move back to Apply queue"
-                  >
-                    <Undo2 size={16} aria-hidden="true" />
-                    Unapply
-                  </button>
-                ) : null}
-                <button type="button" className="button" onClick={() => void mark("skipped")} disabled={updateState.isLoading}>
-                  <X size={16} aria-hidden="true" />
-                  Skip
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => void startTailorResume()}
-                  disabled={tailorResumeState.isLoading || resumeRunActive || !selected.recommended_resume_name}
-                  title="Create a tailored resume copy from the extracted source"
-                >
-                  {tailorResumeState.isLoading || resumeRunActive ? (
-                    <Loader2 className="spin" size={16} aria-hidden="true" />
-                  ) : (
-                    <FilePenLine size={16} aria-hidden="true" />
-                  )}
-                  Tailor Resume
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => void startSelectedEligibilityReview()}
-                  disabled={reviewJobState.isLoading || eligibilityRunActive}
-                  title="Re-review eligibility for selected job"
-                >
-                  {reviewJobState.isLoading || eligibilityRunActive ? (
-                    <Loader2 className="spin" size={16} aria-hidden="true" />
-                  ) : (
-                    <RotateCw size={16} aria-hidden="true" />
-                  )}
-                  Eligibility
-                </button>
-                {selected.eligibility_status === "ineligible" || selected.eligibility_override ? (
-                  <button
-                    type="button"
-                    className="button"
-                    onClick={() => void toggleEligibilityOverride()}
-                    disabled={overrideState.isLoading}
-                    title={selected.eligibility_override ? "Clear eligibility override" : "Allow apply despite eligibility review"}
-                  >
-                    {selected.eligibility_override ? <Lock size={16} aria-hidden="true" /> : <Unlock size={16} aria-hidden="true" />}
-                    {selected.eligibility_override ? "Block" : "Allow"}
-                  </button>
-                ) : null}
-                {selected.url ? (
-                  <a className="button" href={selected.url} target="_blank" rel="noreferrer">
-                    <ExternalLink size={16} aria-hidden="true" />
-                    Open
-                  </a>
-                ) : null}
               </div>
               <dl className="detail-list">
                 <dt>Department</dt>

@@ -62,6 +62,20 @@ describe("JobsPage selection", () => {
     expect(await screen.findByLabelText("Selected job preview")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Library Assistant" })).toBeInTheDocument();
   });
+
+  it("groups selected job controls into a pinned preview header", async () => {
+    render(<JobsPage />);
+
+    const row = screen.getByText("Library Assistant").closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.click(row as HTMLTableRowElement);
+
+    const pinnedControls = await screen.findByLabelText("Selected job controls");
+
+    expect(pinnedControls).toContainElement(screen.getByRole("heading", { name: "Library Assistant" }));
+    expect(pinnedControls).toContainElement(screen.getByRole("button", { name: "Review" }));
+    expect(pinnedControls).toContainElement(screen.getByRole("button", { name: "Close selected job" }));
+  });
 });
 
 function makeJob(overrides: Partial<Job>): Job {
