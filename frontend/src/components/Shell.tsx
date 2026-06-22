@@ -1,13 +1,14 @@
 import {
   BriefcaseBusiness,
+  ChevronDown,
   ClipboardList,
   History,
-  KeyRound,
   Loader2,
   LogIn,
   PanelLeftClose,
   PanelLeftOpen,
   Radar,
+  ShieldCheck,
   UserCircle2,
   X
 } from "lucide-react";
@@ -27,24 +28,37 @@ const navigation = [
 ];
 const SIDEBAR_STORAGE_KEY = "student-work-applier:sidebarCollapsed";
 
+type SessionAlertTone = "success" | "warn" | "error";
+
+interface SessionAlert {
+  message: string;
+  tone: SessionAlertTone;
+}
+
 export function Shell(): ReactElement {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => loadSidebarPreference());
   const [promptOpen, setPromptOpen] = useState<boolean>(false);
   const [promptDismissed, setPromptDismissed] = useState<boolean>(false);
   const [lastSignedIn, setLastSignedIn] = useState<boolean | null>(null);
   const [sessionAutoCheckKey, setSessionAutoCheckKey] = useState<string | null>(null);
+  const [invalidSessionKey, setInvalidSessionKey] = useState<string | null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState<boolean>(false);
+  const [manualSessionCheckActive, setManualSessionCheckActive] = useState<boolean>(false);
+  const [sessionAlert, setSessionAlert] = useState<SessionAlert | null>(null);
   const statusQuery = useGetSessionStatusQuery(undefined, { pollingInterval: 5_000 });
   const [checkSession, checkSessionState] = useCheckSessionMutation();
   const currentSession = checkSessionState.data?.authenticated ? checkSessionState.data : statusQuery.data;
-  const signedIn = Boolean(currentSession?.authenticated);
   const sessionCheckKey = statusQuery.data?.exists
     ? `${statusQuery.data.auth_state_path}:${statusQuery.data.modified_at ?? ""}:${statusQuery.data.size_bytes}`
     : statusQuery.data
       ? "missing"
       : null;
+  const sessionMarkedInvalid = invalidSessionKey !== null && (invalidSessionKey === sessionCheckKey || sessionCheckKey === null);
+  const signedIn = Boolean(currentSession?.authenticated) && !sessionMarkedInvalid;
   const checkingSession = Boolean(
     statusQuery.isLoading ||
       checkSessionState.isLoading ||
+      manualSessionCheckActive ||
       (statusQuery.data?.exists && !signedIn && sessionCheckKey !== null && sessionAutoCheckKey !== sessionCheckKey)
   );
 
@@ -84,13 +98,21 @@ export function Shell(): ReactElement {
 
   useEffect(() => {
     if (checkingSession) {
-      setPromptOpen(true);
+      setPromptOpen(false);
+    } else if (signedIn) {
+      setPromptOpen(false);
     } else if (!signedIn && !promptDismissed) {
       setPromptOpen(true);
     } else if (!signedIn) {
       setPromptOpen(false);
     }
   }, [checkingSession, signedIn, promptDismissed]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      setAccountMenuOpen(false);
+    }
+  }, [signedIn]);
 
   function toggleSidebar(): void {
     setSidebarCollapsed((current) => {
@@ -109,6 +131,42 @@ export function Shell(): ReactElement {
     setPromptDismissed(true);
     setPromptOpen(false);
   }, []);
+
+  const dismissSessionAlert = useCallback((): void => {
+    setSessionAlert(null);
+  }, []);
+
+  async function handleCheckSignIn(): Promise<void> {
+    setAccountMenuOpen(false);
+    setSessionAlert(null);
+    setManualSessionCheckActive(true);
+    try {
+      const result = await checkSession().unwrap();
+      const checkedName = result.display_name?.trim() || result.email?.trim() || signedInLabel || "Workday";
+      if (result.valid && result.authenticated) {
+        setInvalidSessionKey(null);
+        setSessionAlert({
+          tone: "success",
+          message: `Sign-in is valid for ${checkedName}. You can scrape and apply.`
+        });
+      } else {
+        setInvalidSessionKey(sessionCheckKey ?? "manual-invalid");
+        setSessionAlert({
+          tone: "warn",
+          message: "Sign-in needs attention. Sign in again before scraping or applying."
+        });
+        setPromptDismissed(false);
+        setPromptOpen(true);
+      }
+    } catch {
+      setSessionAlert({
+        tone: "error",
+        message: "Could not check sign-in. Try again in a moment."
+      });
+    } finally {
+      setManualSessionCheckActive(false);
+    }
+  }
 
   const authPromptContext = useMemo(
     () => ({
@@ -131,6 +189,23 @@ export function Shell(): ReactElement {
 
   return (
     <div className={`shell ${sidebarCollapsed ? "shell--sidebar-collapsed" : ""}`}>
+      {sessionAlert ? (
+        <div className={`session-alert session-alert--${sessionAlert.tone}`} role="alert">
+          <span>{sessionAlert.message}</span>
+          <button className="icon-button" type="button" onClick={dismissSessionAlert} aria-label="Dismiss session alert">
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {checkingSession ? (
+        <div className="session-check-overlay" role="status" aria-live="polite" aria-label="Checking sign-in status">
+          <div className="session-check-card">
+            <Loader2 className="spin" size={28} aria-hidden="true" />
+            <strong>Checking sign-in status</strong>
+            <span>This will only take a moment.</span>
+          </div>
+        </div>
+      ) : null}
       <aside className="sidebar" aria-label="Primary">
         <div className="brand-row">
           <div className="brand">
@@ -178,47 +253,44 @@ export function Shell(): ReactElement {
             {checkingSession ? (
               <span className="signed-in-pill signed-in-pill--muted" title="Checking Workday session">
                 <Loader2 className="spin" size={16} aria-hidden="true" />
-                <span className="signed-in-pill-label">Checking session</span>
+                <span className="signed-in-pill-label">Checking</span>
               </span>
             ) : signedIn ? (
-              <span className="signed-in-pill" title={email || displayName || "Workday session active"}>
-                <UserCircle2 size={16} aria-hidden="true" />
-                <span className="signed-in-pill-label">Signed in</span>
-                <span className="signed-in-pill-name">{signedInLabel}</span>
-              </span>
-            ) : (
-              <span className="signed-in-pill signed-in-pill--muted" title="No Workday session saved">
-                <UserCircle2 size={16} aria-hidden="true" />
-                <span className="signed-in-pill-label">Not signed in</span>
-              </span>
-            )}
-            {promptOpen ? (
-              <button
-                className="icon-button"
-                type="button"
-                onClick={closePrompt}
-                aria-label="Hide sign-in prompt"
-                title="Hide sign-in prompt"
-              >
-                <X size={16} aria-hidden="true" />
+              <div className="account-menu-wrap">
+                <button
+                  className="signed-in-pill signed-in-pill--button"
+                  type="button"
+                  onClick={() => setAccountMenuOpen((current) => !current)}
+                  aria-haspopup="menu"
+                  aria-expanded={accountMenuOpen}
+                  aria-label={`Signed in as ${signedInLabel}`}
+                  title={email || displayName || "Workday session active"}
+                >
+                  <UserCircle2 size={16} aria-hidden="true" />
+                  <span className="signed-in-pill-label">Signed in</span>
+                  <span className="signed-in-pill-name">{signedInLabel}</span>
+                  <ChevronDown size={14} aria-hidden="true" />
+                </button>
+                {accountMenuOpen ? (
+                  <div className="account-menu" role="menu" aria-label="Workday account">
+                    <div className="account-menu-summary">
+                      <span className="eyebrow">Workday</span>
+                      <strong>{signedInLabel}</strong>
+                    </div>
+                    <button className="account-menu-item" type="button" role="menuitem" onClick={() => void handleCheckSignIn()}>
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      Check sign-in status
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {!signedIn ? (
+              <button className="button button-primary" type="button" onClick={openPrompt} disabled={checkingSession} title="Sign in with Workday">
+                <LogIn size={16} aria-hidden="true" />
+                Sign in
               </button>
             ) : null}
-            <button
-              className="button button-primary"
-              type="button"
-              onClick={openPrompt}
-              disabled={checkingSession}
-              title={checkingSession ? "Checking Workday session" : signedIn ? "Refresh Workday session" : "Sign in with Workday"}
-            >
-              {checkingSession ? (
-                <Loader2 className="spin" size={16} aria-hidden="true" />
-              ) : signedIn ? (
-                <KeyRound size={16} aria-hidden="true" />
-              ) : (
-                <LogIn size={16} aria-hidden="true" />
-              )}
-              {checkingSession ? "Loading" : signedIn ? "Refresh session" : "Sign in"}
-            </button>
           </div>
         </header>
         <AuthPromptContext.Provider value={authPromptContext}>
@@ -227,7 +299,7 @@ export function Shell(): ReactElement {
           </main>
         </AuthPromptContext.Provider>
       </div>
-      <LoginPrompt open={promptOpen} onDismiss={closePrompt} checkingSession={checkingSession} />
+      <LoginPrompt open={promptOpen && !checkingSession && !signedIn} onDismiss={closePrompt} />
     </div>
   );
 }
