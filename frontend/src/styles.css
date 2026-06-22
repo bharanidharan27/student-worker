@@ -213,13 +213,23 @@ a {
   font-weight: 600;
 }
 
+.signed-in-pill--button {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.signed-in-pill--button:hover {
+  background: #d9ebe6;
+}
+
 .signed-in-pill--muted {
   background: #efece4;
   color: #6e7069;
 }
 
 .signed-in-pill-label {
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   text-transform: uppercase;
   font-size: 11px;
 }
@@ -231,6 +241,138 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.account-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 45;
+  display: grid;
+  gap: 8px;
+  width: min(280px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(15, 22, 19, 0.18);
+}
+
+.account-menu-summary {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+}
+
+.account-menu-summary strong {
+  color: #1c1d1a;
+  font-size: 14px;
+}
+
+.account-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #f8f8f2;
+  color: #1c1d1a;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.account-menu-item:hover {
+  background: #e7f1ee;
+  border-color: #b8d8d0;
+  color: #0d5a50;
+}
+
+.session-alert {
+  position: fixed;
+  top: 12px;
+  right: 18px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(460px, calc(100vw - 36px));
+  min-height: 44px;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(15, 22, 19, 0.16);
+  color: #1c1d1a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.session-alert .icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+.session-alert--success {
+  border-color: #b9dcc9;
+  background: #e7f5ed;
+  color: #0c5b34;
+}
+
+.session-alert--warn {
+  border-color: #e5cd81;
+  background: #fff7d9;
+  color: #755a05;
+}
+
+.session-alert--error {
+  border-color: #e5b5b5;
+  background: #fff0f0;
+  color: #8f2525;
+}
+
+.session-check-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 24, 22, 0.42);
+}
+
+.session-check-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  width: min(320px, 100%);
+  border: 1px solid #deded6;
+  border-radius: 8px;
+  background: #fff;
+  color: #1c1d1a;
+  padding: 24px;
+  box-shadow: 0 18px 48px rgba(15, 22, 19, 0.22);
+  text-align: center;
+}
+
+.session-check-card strong {
+  font-size: 18px;
+}
+
+.session-check-card span {
+  color: #6e7069;
+  font-size: 13px;
 }
 
 .button-ghost {
@@ -301,29 +443,6 @@ a {
   color: #4c4e48;
   font-size: 13px;
   line-height: 1.5;
-}
-
-.login-prompt-status {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  border: 1px solid #deded6;
-  border-radius: 8px;
-  overflow: hidden;
-  background: #deded6;
-}
-
-.login-prompt-status > div {
-  display: grid;
-  gap: 4px;
-  background: #fff;
-  padding: 12px 14px;
-}
-
-.login-prompt-status strong {
-  font-size: 14px;
-  color: #1c1d1a;
-  word-break: break-word;
 }
 
 .login-prompt-actions {

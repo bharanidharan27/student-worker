@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -155,6 +155,15 @@ describe("ApplyPage auth prompts", () => {
     expect(apiMocks.applyJob).not.toHaveBeenCalled();
   });
 
+  it("shows one sign-in control in the topbar when signed out", () => {
+    renderApplyRoute();
+
+    const topbar = screen.getByLabelText("Account status");
+
+    expect(within(topbar).getByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
+    expect(within(topbar).queryByText(/not signed in/i)).not.toBeInTheDocument();
+  });
+
   it("reopens the login prompt instead of applying the queue when signed out", async () => {
     renderApplyRoute();
     await dismissInitialLoginPrompt();
@@ -165,7 +174,7 @@ describe("ApplyPage auth prompts", () => {
     expect(apiMocks.applyQueue).not.toHaveBeenCalled();
   });
 
-  it("checks a saved auth file implicitly and shows a loading state", async () => {
+  it("checks a saved auth file implicitly and shows a loading screen", async () => {
     apiMocks.sessionStatus = {
       auth_state_path: "playwright/.auth/asu_workday.json",
       exists: true,
@@ -179,15 +188,13 @@ describe("ApplyPage auth prompts", () => {
 
     renderApplyRoute();
 
-    expect(await screen.findAllByText(/checking session/i)).not.toHaveLength(0);
-    for (const loadingButton of screen.getAllByRole("button", { name: /loading/i })) {
-      expect(loadingButton).toBeDisabled();
-    }
+    expect(await screen.findByRole("status", { name: /checking sign-in status/i })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /sign in to apply to jobs/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /check session/i })).not.toBeInTheDocument();
     await waitFor(() => expect(apiMocks.checkSession).toHaveBeenCalledTimes(1));
   });
 
-  it("opens the refresh session prompt when already signed in", async () => {
+  it("keeps signed-in topbar simple and opens validation from the user menu", async () => {
     apiMocks.sessionStatus = {
       auth_state_path: "playwright/.auth/asu_workday.json",
       exists: true,
@@ -199,9 +206,82 @@ describe("ApplyPage auth prompts", () => {
     };
 
     renderApplyRoute();
-    fireEvent.click(await screen.findByRole("button", { name: /refresh session/i }));
 
-    expect(await screen.findByRole("dialog", { name: /refresh workday session/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /refresh session/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/refresh workday session/i)).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /signed in as bharanidharan maheswaran/i }));
+
+    expect(await screen.findByRole("menu", { name: /workday account/i })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /check sign-in status/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /refresh session/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /check session/i })).not.toBeInTheDocument();
+  });
+
+  it("checks signed-in session from the user menu with a loading screen and top alert", async () => {
+    apiMocks.sessionStatus = {
+      auth_state_path: "playwright/.auth/asu_workday.json",
+      exists: true,
+      authenticated: true,
+      size_bytes: 100,
+      modified_at: "2026-06-20T12:00:00",
+      display_name: "Bharanidharan Maheswaran",
+      email: null
+    };
+    let resolveCheck: ((value: typeof apiMocks.sessionStatus & { valid: boolean; message: string }) => void) | undefined;
+    apiMocks.checkSession.mockReturnValue({
+      unwrap: () =>
+        new Promise((resolve) => {
+          resolveCheck = resolve;
+        })
+    });
+
+    renderApplyRoute();
+    fireEvent.click(await screen.findByRole("button", { name: /signed in as bharanidharan maheswaran/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /check sign-in status/i }));
+
+    expect(await screen.findByRole("status", { name: /checking sign-in status/i })).toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: /workday account/i })).not.toBeInTheDocument();
+
+    resolveCheck?.({
+      ...apiMocks.sessionStatus,
+      valid: true,
+      message: "Saved Workday session looks valid."
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/sign-in is valid/i);
+    expect(screen.queryByRole("status", { name: /checking sign-in status/i })).not.toBeInTheDocument();
+    expect(apiMocks.checkSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves the user back to sign-in when the signed-in session is no longer valid", async () => {
+    apiMocks.sessionStatus = {
+      auth_state_path: "playwright/.auth/asu_workday.json",
+      exists: true,
+      authenticated: true,
+      size_bytes: 100,
+      modified_at: "2026-06-20T12:00:00",
+      display_name: "Bharanidharan Maheswaran",
+      email: null
+    };
+    apiMocks.checkSession.mockReturnValue({
+      unwrap: () =>
+        Promise.resolve({
+          ...apiMocks.sessionStatus,
+          authenticated: false,
+          valid: false,
+          message: "Session expired."
+        })
+    });
+
+    renderApplyRoute();
+    fireEvent.click(await screen.findByRole("button", { name: /signed in as bharanidharan maheswaran/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /check sign-in status/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/sign-in needs attention/i);
+    expect(within(screen.getByLabelText("Account status")).getByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Account status")).queryByText(/not signed in/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: /sign in to apply to jobs/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /signed in as bharanidharan maheswaran/i })).not.toBeInTheDocument();
   });
 });
