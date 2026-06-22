@@ -164,6 +164,17 @@ describe("ApplyPage auth prompts", () => {
     expect(within(topbar).queryByText(/not signed in/i)).not.toBeInTheDocument();
   });
 
+  it("shows Scraper before Jobs in the primary navigation", () => {
+    renderApplyRoute();
+
+    const primaryNavigation = screen.getByLabelText("Primary");
+    const navLabels = within(primaryNavigation)
+      .getAllByRole("link")
+      .map((link) => link.textContent);
+
+    expect(navLabels).toEqual(["Scraper", "Jobs", "Apply", "Runs"]);
+  });
+
   it("reopens the login prompt instead of applying the queue when signed out", async () => {
     renderApplyRoute();
     await dismissInitialLoginPrompt();
