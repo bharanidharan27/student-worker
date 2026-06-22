@@ -1,9 +1,10 @@
+import { skipToken } from "@reduxjs/toolkit/query";
 import { Loader2, Play, Radar } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { RunPanel } from "../components/RunPanel";
-import { useListRunsQuery, useStartScrapeMutation } from "../services/api";
+import { useGetJobQuery, useListRunsQuery, useStartScrapeMutation } from "../services/api";
 import type { AutomationRun, ScrapeRequest } from "../types";
 import { isActiveRunStatus } from "../utils/runStatus";
 
@@ -30,6 +31,8 @@ export function ScraperPage(): ReactElement {
     [activeRuns]
   );
   const activeBrowserRun = activeRuns[0] ?? null;
+  const activeBrowserJobId = activeBrowserRun && activeBrowserRun.kind !== "scrape" ? getRunJobId(activeBrowserRun) : null;
+  const activeBrowserJobQuery = useGetJobQuery(activeBrowserJobId ?? skipToken);
   const startBlocked = startState.isLoading || activeBrowserRun !== null;
 
   useEffect(() => {
@@ -72,7 +75,7 @@ export function ScraperPage(): ReactElement {
 
       {activeBrowserRun && activeBrowserRun.kind !== "scrape" ? (
         <p className="notice notice-warn">
-          Browser worker is busy with {formatRunKind(activeBrowserRun)} #{activeBrowserRun.id}.
+          Browser worker is busy with {formatBusyRun(activeBrowserRun, activeBrowserJobQuery.data?.title)}.
         </p>
       ) : null}
 
@@ -175,4 +178,25 @@ function rememberScrapeRun(runId: number): void {
 
 function formatRunKind(run: AutomationRun): string {
   return run.kind.replaceAll("_", " ");
+}
+
+function formatBusyRun(run: AutomationRun, jobTitle?: string | null): string {
+  const runKind = formatRunKind(run);
+  if (getRunJobId(run) === null) {
+    return `${runKind} #${run.id}`;
+  }
+  const normalizedTitle = jobTitle?.trim();
+  return normalizedTitle ? `${runKind} for ${normalizedTitle}` : `${runKind} for this job`;
+}
+
+function getRunJobId(run: AutomationRun): number | null {
+  const jobId = run.params.job_id;
+  if (typeof jobId === "number") {
+    return jobId;
+  }
+  if (typeof jobId === "string" && jobId.trim()) {
+    const parsed = Number(jobId);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }

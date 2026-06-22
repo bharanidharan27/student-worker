@@ -640,6 +640,18 @@ a {
   box-shadow: 0 24px 60px rgba(32, 33, 36, 0.18);
 }
 
+.selected-job-sticky {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  display: grid;
+  gap: 14px;
+  margin: -16px -16px 0;
+  border-bottom: 1px solid #ecece4;
+  background: #fff;
+  padding: 16px 16px 14px;
+}
+
 .run-panel-wide {
   grid-column: 1 / -1;
   min-width: 0;
