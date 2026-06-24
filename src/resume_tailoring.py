@@ -8,11 +8,10 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from docx import Document
-
 from src.eligibility.assessor import TECH_TERMS, _contains_term
 from src.eligibility.models import EligibilityAssessment, JobRequirement
 from src.eligibility.profile import ApplicantProfile, load_applicant_profile
+from src.matching.resume_catalog import LEGACY_RESUME_SOURCE_ALIASES
 from src.storage.db import DEFAULT_DB_PATH, get_job_by_id, insert_generated_document
 from src.storage.models import GeneratedDocumentRecord
 from src.utils.text_cleaner import normalize_whitespace
@@ -148,21 +147,15 @@ def tailor_resume_for_job(
     output_dir.mkdir(parents=True, exist_ok=True)
     notes_path = output_dir / "tailoring_notes.md"
     output_resume = _copy_resume_source(source_resume, output_dir, job_id)
-    if source_resume.kind == "latex":
-        _sanitize_tex_source(output_resume)
+    _sanitize_tex_source(output_resume)
     if additions:
-        if source_resume.kind == "latex":
-            additions, overflow = _apply_tailored_tex_additions(output_resume, additions)
-            skipped.extend(
-                [
-                    f"{item} - not added to the LaTeX resume because it could not fit into the existing one-page skills layout."
-                    for item in overflow
-                ]
-            )
-        else:
-            document = Document(str(output_resume))
-            _append_tailored_docx_section(document, additions)
-            document.save(str(output_resume))
+        additions, overflow = _apply_tailored_tex_additions(output_resume, additions)
+        skipped.extend(
+            [
+                f"{item} - not added to the LaTeX resume because it could not fit into the existing one-page skills layout."
+                for item in overflow
+            ]
+        )
 
     _write_notes(
         notes_path,
@@ -214,31 +207,69 @@ def _resolve_extracted_dir(extracted_dir: Path | None) -> Path:
 
 
 def _find_extracted_resume(row, extracted_dir: Path) -> ResumeSource:
-    resume_name = row["recommended_resume_name"]
-    if not resume_name and row["recommended_resume_path"]:
-        resume_name = Path(row["recommended_resume_path"]).name
-    if not resume_name:
+    resume_identifiers = _resume_identifiers(row)
+    if not resume_identifiers:
         raise ValueError("This job has no recommended resume. Re-score the job before tailoring.")
 
-    target_stem = Path(resume_name).stem
-    direct_latex_dir = extracted_dir / target_stem
-    direct_latex_main = direct_latex_dir / "main.tex"
-    if direct_latex_main.exists():
-        return ResumeSource(kind="latex", path=direct_latex_main, root_dir=direct_latex_dir)
+    for identifier in resume_identifiers:
+        source = _find_latex_resume_source(identifier, extracted_dir)
+        if source is not None:
+            return source
 
-    direct_docx = extracted_dir / f"{target_stem}.docx"
-    if direct_docx.exists():
-        return ResumeSource(kind="docx", path=direct_docx)
+    searched = ", ".join(resume_identifiers)
+    raise FileNotFoundError(f"Could not find extracted LaTeX source for {searched} in {extracted_dir}.")
+
+
+def _resume_identifiers(row) -> list[str]:
+    identifiers: list[str] = []
+    for value in (row["recommended_resume_path"], row["recommended_resume_name"]):
+        if value and value not in identifiers:
+            identifiers.append(value)
+    return identifiers
+
+
+def _find_latex_resume_source(identifier: str, extracted_dir: Path) -> ResumeSource | None:
+    path = Path(identifier)
+    if path.name.lower() == "main.tex":
+        source = _source_from_main(extracted_dir / path.parent.name / "main.tex")
+        if source is not None:
+            return source
+        if path.is_absolute():
+            return _source_from_main(path)
+        source = _source_from_main(path)
+        if source is not None:
+            return source
+
+    target_stem = _resume_source_stem(identifier)
+    source = _source_from_main(extracted_dir / target_stem / "main.tex")
+    if source is not None:
+        return source
+
+    legacy_source_dir = LEGACY_RESUME_SOURCE_ALIASES.get(target_stem)
+    if legacy_source_dir is not None:
+        source = _source_from_main(extracted_dir / legacy_source_dir / "main.tex")
+        if source is not None:
+            return source
 
     normalized_target = _normalize_filename_stem(target_stem)
     for candidate_dir in sorted(path for path in extracted_dir.iterdir() if path.is_dir()):
         candidate_main = candidate_dir / "main.tex"
         if candidate_main.exists() and _normalize_filename_stem(candidate_dir.name) == normalized_target:
             return ResumeSource(kind="latex", path=candidate_main, root_dir=candidate_dir)
-    for candidate in extracted_dir.glob("*.docx"):
-        if _normalize_filename_stem(candidate.stem) == normalized_target:
-            return ResumeSource(kind="docx", path=candidate)
-    raise FileNotFoundError(f"Could not find extracted LaTeX or DOCX source for {resume_name} in {extracted_dir}.")
+    return None
+
+
+def _source_from_main(path: Path) -> ResumeSource | None:
+    if path.name.lower() != "main.tex" or not path.exists():
+        return None
+    return ResumeSource(kind="latex", path=path, root_dir=path.parent)
+
+
+def _resume_source_stem(value: str) -> str:
+    path = Path(value)
+    if path.name.lower() == "main.tex" and path.parent.name:
+        return path.parent.name
+    return path.stem
 
 
 def _evidence_bank(extracted_dir: Path, profile: ApplicantProfile) -> list[ResumeEvidence]:
@@ -255,28 +286,11 @@ def _evidence_bank(extracted_dir: Path, profile: ApplicantProfile) -> list[Resum
             evidence.append(ResumeEvidence(_read_tex_text(tex_path), tex_path.parent.name))
         except Exception:
             continue
-    for docx_path in sorted(extracted_dir.glob("*.docx")):
-        try:
-            evidence.append(ResumeEvidence(_read_docx_text(docx_path), docx_path.name))
-        except Exception:
-            continue
     return evidence
 
 
 def _read_resume_text(source_resume: ResumeSource) -> str:
-    if source_resume.kind == "latex":
-        return _read_tex_text(source_resume.path)
-    return _read_docx_text(source_resume.path)
-
-
-def _read_docx_text(path: Path) -> str:
-    document = Document(str(path))
-    parts = [paragraph.text for paragraph in document.paragraphs]
-    for table in document.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                parts.append(cell.text)
-    return normalize_whitespace(" ".join(parts))
+    return _read_tex_text(source_resume.path)
 
 
 def _read_tex_text(path: Path) -> str:
@@ -393,26 +407,10 @@ def _first_evidence(terms: list[str], evidence_bank: list[ResumeEvidence]) -> st
 
 
 def _copy_resume_source(source_resume: ResumeSource, output_dir: Path, job_id: int) -> Path:
-    if source_resume.kind == "latex":
-        if source_resume.root_dir is None:
-            raise ValueError("Latex resume source is missing its source directory.")
-        shutil.copytree(source_resume.root_dir, output_dir, dirs_exist_ok=True)
-        return output_dir / source_resume.path.name
-
-    output_docx = output_dir / f"{source_resume.path.stem}_tailored_job_{job_id}.docx"
-    shutil.copy2(source_resume.path, output_docx)
-    return output_docx
-
-
-def _append_tailored_docx_section(document, additions: list[str]) -> None:
-    document.add_paragraph()
-    document.add_heading("Targeted Skills", level=2)
-    for addition in additions:
-        try:
-            paragraph = document.add_paragraph(style="List Bullet")
-        except KeyError:
-            paragraph = document.add_paragraph()
-        paragraph.add_run(_resume_addition_text(addition))
+    if source_resume.root_dir is None:
+        raise ValueError("Latex resume source is missing its source directory.")
+    shutil.copytree(source_resume.root_dir, output_dir, dirs_exist_ok=True)
+    return output_dir / source_resume.path.name
 
 
 def _apply_tailored_tex_additions(path: Path, additions: list[str]) -> tuple[list[str], list[str]]:
