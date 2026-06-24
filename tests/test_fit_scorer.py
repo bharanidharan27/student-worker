@@ -24,7 +24,7 @@ def test_scorer_produces_strong_fit() -> None:
     assert fit.label == "Strong Fit"
     assert fit.score >= 80
     assert fit.recommended_resume_type == "technical"
-    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Tech_Ass.pdf"
+    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Tech_Ass/main.tex"
 
 
 def test_advising_office_aide_routes_to_admin_office_resume() -> None:
@@ -41,7 +41,7 @@ def test_advising_office_aide_routes_to_admin_office_resume() -> None:
     assert fit.score >= 80
     assert fit.job_family == "office_admin"
     assert fit.recommended_resume_type == "admin_office"
-    assert fit.recommended_resume_name == "Bharanidharan_Maheswaran_WP_Off_Ass.pdf"
+    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Student_aide/main.tex"
 
 
 def test_workday_boilerplate_does_not_cap_normal_office_role() -> None:
@@ -76,7 +76,7 @@ def test_ai_product_assistant_routes_to_product_ai_resume() -> None:
     assert fit.score >= 80
     assert fit.job_family == "product_ai"
     assert fit.recommended_resume_type == "product_ai"
-    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Resume.pdf"
+    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_AI_Product_Ass/main.tex"
 
 
 def test_admissions_recruitment_uses_student_services_resume_not_technical() -> None:
@@ -123,7 +123,7 @@ def test_data_aide_routes_to_data_or_technical_resume() -> None:
     assert fit.score >= 60
     assert fit.job_family == "data_tech"
     assert fit.recommended_resume_type == "technical"
-    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Tech_Ass.pdf"
+    assert fit.recommended_resume_name == "Bharanidharan_M_PartTime_Tech_Ass/main.tex"
 
 
 def test_string_quartet_performer_is_low_fit_and_not_technical() -> None:
@@ -184,4 +184,4 @@ def test_rescore_db_updates_existing_jobs(tmp_path: Path) -> None:
     assert row["fit_label"] == "Strong Fit"
     assert row["job_family"] == "office_admin"
     assert row["recommended_resume_type"] == "admin_office"
-    assert row["recommended_resume_name"] == "Bharanidharan_Maheswaran_WP_Off_Ass.pdf"
+    assert row["recommended_resume_name"] == "Bharanidharan_M_PartTime_Student_aide/main.tex"

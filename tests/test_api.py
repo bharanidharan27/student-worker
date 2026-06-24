@@ -354,7 +354,7 @@ def test_api_starts_tailor_resume_run(monkeypatch, tmp_path: Path) -> None:
             output_dir="resumes/tailored/1-technology-consultant",
             notes_path="resumes/tailored/1-technology-consultant/tailoring_notes.md",
             generated_document_id=1,
-            additions=["Experience with Zoom. Evidence: Zoom_Resume.docx."],
+            additions=["Experience with Zoom. Evidence: Zoom_Resume."],
             skipped=[],
         )
 

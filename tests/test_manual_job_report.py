@@ -27,6 +27,6 @@ def test_manual_report_writes_markdown_and_deduplicates_job(tmp_path: Path) -> N
     assert "AI Product Assistant" in report
     assert "Recommended Resume Type: product_ai" in report
     assert "Job Family: product_ai" in report
-    assert "Recommended Resume: Bharanidharan_M_PartTime_Resume.pdf" in report
+    assert "Recommended Resume: Bharanidharan_M_PartTime_AI_Product_Ass/main.tex" in report
     assert "## Eligibility Review" in report
     assert "### Resume Changes" in report

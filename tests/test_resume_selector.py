@@ -8,7 +8,7 @@ def test_resume_selector_maps_representative_jobs() -> None:
     assert select_resume_type("Student Ambassador", "Customer service and peer support") == "customer_service"
 
 
-def test_resume_selector_returns_exact_master_pdf() -> None:
+def test_resume_selector_returns_extracted_latex_source() -> None:
     recommendation = recommend_resume_for_job(
         "Advising Office Aide",
         "Support advising office records, email, phone, data entry, and student communication.",
@@ -16,9 +16,9 @@ def test_resume_selector_returns_exact_master_pdf() -> None:
 
     assert recommendation.job_family == "office_admin"
     assert recommendation.recommended_resume_type == "admin_office"
-    assert recommendation.recommended_resume_name == "Bharanidharan_Maheswaran_WP_Off_Ass.pdf"
+    assert recommendation.recommended_resume_name == "Bharanidharan_M_PartTime_Student_aide/main.tex"
     assert recommendation.recommended_resume_path.endswith(
-        "Bharanidharan_Maheswaran_WP_Off_Ass.pdf"
+        "resumes/extracted/Bharanidharan_M_PartTime_Student_aide/main.tex"
     )
 
 
@@ -65,4 +65,7 @@ def test_business_office_title_routes_to_finance_business_resume() -> None:
     )
 
     assert recommendation.job_family == "finance_business"
-    assert recommendation.recommended_resume_name == "Bharanidharan_M_PartTime_Financial_Off_Aide.pdf"
+    assert recommendation.recommended_resume_name == "Bharanidharan_M_PartTime_Financial_Off_Aide/main.tex"
+    assert recommendation.recommended_resume_path.endswith(
+        "resumes/extracted/Bharanidharan_M_PartTime_Financial_Off_Aide/main.tex"
+    )

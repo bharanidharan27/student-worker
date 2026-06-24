@@ -11,7 +11,7 @@ user:
   redacted_profile_path: "data/applicant_profile.yaml"
 
 generation:
-  output_format: "docx"
+  output_format: "tex"
   max_resume_pages: 1
   require_manual_review: true
 

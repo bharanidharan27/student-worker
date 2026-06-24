@@ -151,7 +151,7 @@ Manual job reports store an eligibility review immediately. Scraped jobs can be 
 
 Eligibility review flags blockers and warnings such as undergraduate-only roles, federal work-study constraints, certification requirements, unclear hours, missing required technologies, and experience requirements. Ineligible jobs are hidden from the apply queue unless you manually enable the eligibility override.
 
-The dashboard `Tailor Resume` action creates a tailored copy under `resumes/tailored/<job-id>-<job-title>/`. It only adds missing requirement items supported by `data/applicant_profile.yaml` or another extracted resume source. Unsupported items are listed in `tailoring_notes.md`.
+The dashboard `Tailor Resume` action creates a tailored LaTeX copy under `resumes/tailored/<job-id>-<job-title>/` from the selected `resumes/extracted/<resume>/main.tex` source. It only adds missing requirement items supported by `data/applicant_profile.yaml` or another extracted LaTeX resume source. Unsupported items are listed in `tailoring_notes.md`.
 
 ## Apply Queue
 
